@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -398,6 +399,7 @@ func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *tes
 	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
 		{Name: "root", Enter: noop, Exit: noop, Rollback: func(context.Context) error { rootRollbacks.Add(1); return nil }},
 		{Name: "child", DependsOn: []string{"root"}, Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "failed", Enter: noop, Exit: noop, Rollback: noop},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -406,8 +408,9 @@ func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *tes
 	saveSnapshot(t, store, lifecycle.Snapshot{
 		RunID: "rollback-restart", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack,
 		Phases: map[string]lifecycle.PhaseState{
-			"root":  {Status: lifecycle.PhaseEntered, Attempts: 1},
-			"child": {Status: lifecycle.PhaseRollbackFailed, Attempts: 2, LastError: "child rollback failed"},
+			"root":   {Status: lifecycle.PhaseEntered, Attempts: 1},
+			"child":  {Status: lifecycle.PhaseRollbackFailed, Attempts: 2, LastError: "child rollback failed"},
+			"failed": {Status: lifecycle.PhaseEnterFailed, Attempts: 1, LastError: "entry failed"},
 		},
 	})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
@@ -415,8 +418,8 @@ func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *tes
 		t.Fatal(err)
 	}
 	snapshot, err := engine.Run(context.Background(), "rollback-restart")
-	if err == nil || err.Error() != "child rollback failed" {
-		t.Fatalf("Run error = %v, want persisted rollback failure", err)
+	if err == nil || !strings.Contains(err.Error(), "entry failed") || !strings.Contains(err.Error(), "child rollback failed") {
+		t.Fatalf("Run error = %v, want persisted entry and rollback failures", err)
 	}
 	if snapshot.Status != lifecycle.RunFailed || snapshot.Phases["root"].Status != lifecycle.PhaseRolledBack {
 		t.Fatalf("snapshot = run:%q root:%q", snapshot.Status, snapshot.Phases["root"].Status)
@@ -578,16 +581,10 @@ func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 		{name: "exiting", run: lifecycle.RunRunning, phase: lifecycle.PhaseExiting, attempts: 2},
 		{name: "exited before final save", run: lifecycle.RunRunning, phase: lifecycle.PhaseExited, attempts: 2},
 		{name: "exit failed before final save", run: lifecycle.RunRunning, phase: lifecycle.PhaseExitFailed, attempts: 2, lastErr: "exit failed"},
-		{name: "entering during rollback", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEntering, attempts: 1},
-		{name: "entered during rollback", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEntered, attempts: 1},
 		{name: "enter failed", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEnterFailed, attempts: 1, lastErr: "enter failed"},
-		{name: "rolling back", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRollingBack, attempts: 2},
-		{name: "rolled back before final save", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRolledBack, attempts: 2},
-		{name: "rollback failed before final save", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRollbackFailed, attempts: 2, lastErr: "rollback failed"},
 		{name: "succeeded", run: lifecycle.RunSucceeded, phase: lifecycle.PhaseExited, attempts: 2, terminal: true},
 		{name: "rolled back", run: lifecycle.RunRolledBack, phase: lifecycle.PhaseEnterFailed, attempts: 1, lastErr: "enter failed", terminal: true},
 		{name: "exit path failed", run: lifecycle.RunFailed, phase: lifecycle.PhaseExitFailed, attempts: 2, lastErr: "exit failed", terminal: true},
-		{name: "rollback path failed", run: lifecycle.RunFailed, phase: lifecycle.PhaseRollbackFailed, attempts: 2, lastErr: "rollback failed", terminal: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -58,16 +58,10 @@ func TestSnapshotAcceptsNaturalPhaseStateCrashBoundaries(t *testing.T) {
 		{name: "exiting", run: RunRunning, state: PhaseState{Status: PhaseExiting, Attempts: 2}},
 		{name: "exited before terminal save", run: RunRunning, state: PhaseState{Status: PhaseExited, Attempts: 2}},
 		{name: "exit failure before terminal save", run: RunRunning, state: PhaseState{Status: PhaseExitFailed, Attempts: 2}},
-		{name: "entering during rollback", run: RunRollingBack, state: PhaseState{Status: PhaseEntering, Attempts: 1}},
-		{name: "entered during rollback", run: RunRollingBack, state: PhaseState{Status: PhaseEntered, Attempts: 1}},
 		{name: "entry failure", run: RunRollingBack, state: PhaseState{Status: PhaseEnterFailed, Attempts: 1}},
-		{name: "rolling back", run: RunRollingBack, state: PhaseState{Status: PhaseRollingBack, Attempts: 2}},
-		{name: "rolled back before terminal save", run: RunRollingBack, state: PhaseState{Status: PhaseRolledBack, Attempts: 2}},
-		{name: "rollback failure before terminal save", run: RunRollingBack, state: PhaseState{Status: PhaseRollbackFailed, Attempts: 2}},
 		{name: "succeeded", run: RunSucceeded, state: PhaseState{Status: PhaseExited, Attempts: 2}},
-		{name: "rolled back", run: RunRolledBack, state: PhaseState{Status: PhaseRolledBack, Attempts: 2}},
+		{name: "rolled back after entry failure", run: RunRolledBack, state: PhaseState{Status: PhaseEnterFailed, Attempts: 1}},
 		{name: "exit path failed", run: RunFailed, state: PhaseState{Status: PhaseExitFailed, Attempts: 2}},
-		{name: "rollback path failed", run: RunFailed, state: PhaseState{Status: PhaseRollbackFailed, Attempts: 2}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -79,6 +73,109 @@ func TestSnapshotAcceptsNaturalPhaseStateCrashBoundaries(t *testing.T) {
 				t.Fatalf("validateSnapshot() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+func TestSnapshotRejectsUnreachableRunStates(t *testing.T) {
+	emptyPlan, err := NewPlan(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	singlePlan := validationSinglePhasePlan(t)
+	multiPlan := validationIndependentPlan(t, "failed", "cleanup")
+	tests := []struct {
+		name     string
+		plan     *Plan
+		run      RunStatus
+		phases   map[string]PhaseState
+		wantText string
+	}{
+		{name: "empty running", plan: emptyPlan, run: RunRunning, phases: map[string]PhaseState{}, wantText: "run reachability"},
+		{name: "empty rolling back", plan: emptyPlan, run: RunRollingBack, phases: map[string]PhaseState{}, wantText: "rollback provenance"},
+		{name: "empty rolled back", plan: emptyPlan, run: RunRolledBack, phases: map[string]PhaseState{}, wantText: "rollback provenance"},
+		{name: "single pending marked running", plan: singlePlan, run: RunRunning, phases: map[string]PhaseState{
+			"phase": {Status: PhasePending},
+		}, wantText: "run reachability"},
+		{name: "single entered marked rolling back", plan: singlePlan, run: RunRollingBack, phases: map[string]PhaseState{
+			"phase": {Status: PhaseEntered, Attempts: 1},
+		}, wantText: "rollback provenance"},
+		{name: "single rollback in progress", plan: singlePlan, run: RunRollingBack, phases: map[string]PhaseState{
+			"phase": {Status: PhaseRollingBack, Attempts: 2},
+		}, wantText: "rollback provenance"},
+		{name: "single rolled back", plan: singlePlan, run: RunRolledBack, phases: map[string]PhaseState{
+			"phase": {Status: PhaseRolledBack, Attempts: 2},
+		}, wantText: "rollback provenance"},
+		{name: "single rollback failed", plan: singlePlan, run: RunFailed, phases: map[string]PhaseState{
+			"phase": {Status: PhaseRollbackFailed, Attempts: 2},
+		}, wantText: "rollback provenance"},
+		{name: "multi rolling back without failure", plan: multiPlan, run: RunRollingBack, phases: map[string]PhaseState{
+			"failed": {Status: PhasePending}, "cleanup": {Status: PhaseRollingBack, Attempts: 2},
+		}, wantText: "rollback provenance"},
+		{name: "multi rolled back without failure", plan: multiPlan, run: RunRolledBack, phases: map[string]PhaseState{
+			"failed": {Status: PhasePending}, "cleanup": {Status: PhaseRolledBack, Attempts: 2},
+		}, wantText: "rollback provenance"},
+		{name: "multi rollback failed without entry failure", plan: multiPlan, run: RunFailed, phases: map[string]PhaseState{
+			"failed": {Status: PhaseRolledBack, Attempts: 2}, "cleanup": {Status: PhaseRollbackFailed, Attempts: 2},
+		}, wantText: "rollback provenance"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := Snapshot{RunID: "run", PlanDigest: test.plan.Digest(), Status: test.run, Phases: test.phases}
+			err := validateSnapshot(test.plan, "run", snapshot)
+			if !errors.Is(err, ErrInvalidSnapshot) || !strings.Contains(err.Error(), test.wantText) {
+				t.Fatalf("validateSnapshot() = %v, want %v caused by %s", err, ErrInvalidSnapshot, test.wantText)
+			}
+		})
+	}
+}
+
+func TestSnapshotAcceptsReachableRollbackProvenance(t *testing.T) {
+	plan := validationIndependentPlan(t, "failed", "cleanup")
+	tests := []struct {
+		name   string
+		run    RunStatus
+		failed PhaseState
+		other  PhaseState
+	}{
+		{name: "entry recovery", run: RunRollingBack, failed: PhaseState{Status: PhaseEnterFailed, Attempts: 1}, other: PhaseState{Status: PhaseEntering, Attempts: 1}},
+		{name: "rollback in progress", run: RunRollingBack, failed: PhaseState{Status: PhaseEnterFailed, Attempts: 1}, other: PhaseState{Status: PhaseRollingBack, Attempts: 2}},
+		{name: "rolled back", run: RunRolledBack, failed: PhaseState{Status: PhaseEnterFailed, Attempts: 1}, other: PhaseState{Status: PhaseRolledBack, Attempts: 2}},
+		{name: "rollback failed", run: RunFailed, failed: PhaseState{Status: PhaseEnterFailed, Attempts: 1}, other: PhaseState{Status: PhaseRollbackFailed, Attempts: 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := Snapshot{
+				RunID: "run", PlanDigest: plan.Digest(), Status: test.run,
+				Phases: map[string]PhaseState{"failed": test.failed, "cleanup": test.other},
+			}
+			if err := validateSnapshot(plan, "run", snapshot); err != nil {
+				t.Fatalf("validateSnapshot() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestSnapshotAcceptsCanonicalEmptyPendingState(t *testing.T) {
+	plan, err := NewPlan(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := Snapshot{RunID: "run", PlanDigest: plan.Digest(), Status: RunPending, Phases: map[string]PhaseState{}}
+	if err := validateSnapshot(plan, "run", snapshot); err != nil {
+		t.Fatalf("validateSnapshot() = %v, want nil", err)
+	}
+}
+
+func TestNewEngineRejectsUninitializedPlanAndAcceptsCanonicalEmptyPlan(t *testing.T) {
+	if _, err := NewEngine(&Plan{}, &adversarialStore{}, Options{}); !errors.Is(err, ErrInvalidPhase) {
+		t.Fatalf("NewEngine(&Plan{}) = %v, want %v", err, ErrInvalidPhase)
+	}
+	plan, err := NewPlan(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewEngine(plan, &adversarialStore{}, Options{}); err != nil {
+		t.Fatalf("NewEngine(NewPlan(nil)) = %v, want nil", err)
 	}
 }
 
@@ -140,7 +237,7 @@ func TestSnapshotRejectsImpossibleDependencyAndCleanupOrdering(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := Snapshot{
 				RunID: "run", PlanDigest: plan.Digest(), Status: test.run,
-				Phases: map[string]PhaseState{"parent": test.parent, "child": test.child},
+				Phases: validationParentChildStates(test.run, test.parent, test.child),
 			}
 			if err := validateSnapshot(plan, "run", snapshot); !errors.Is(err, ErrInvalidSnapshot) || !strings.Contains(err.Error(), "dependency ordering") {
 				t.Fatalf("validateSnapshot() = %v, want %v caused by dependency ordering", err, ErrInvalidSnapshot)
@@ -197,7 +294,7 @@ func TestSnapshotAcceptsDependencyOrderedCrashBoundaries(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := Snapshot{
 				RunID: "run", PlanDigest: plan.Digest(), Status: test.run,
-				Phases: map[string]PhaseState{"parent": test.parent, "child": test.child},
+				Phases: validationParentChildStates(test.run, test.parent, test.child),
 			}
 			if err := validateSnapshot(plan, "run", snapshot); err != nil {
 				t.Fatalf("validateSnapshot() = %v, want nil", err)
@@ -211,6 +308,7 @@ func TestSnapshotRejectsRollbackCleanupWhileEntryRemainsInProgress(t *testing.T)
 	plan, err := NewPlan([]Phase{
 		{Name: "entering", Enter: noop, Exit: noop, Rollback: noop},
 		{Name: "cleaned", Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "failed", Enter: noop, Exit: noop, Rollback: noop},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,6 +318,7 @@ func TestSnapshotRejectsRollbackCleanupWhileEntryRemainsInProgress(t *testing.T)
 		Phases: map[string]PhaseState{
 			"entering": {Status: PhaseEntering, Attempts: 1},
 			"cleaned":  {Status: PhaseRolledBack, Attempts: 2},
+			"failed":   {Status: PhaseEnterFailed, Attempts: 1},
 		},
 	}
 	if err := validateSnapshot(plan, "run", snapshot); !errors.Is(err, ErrInvalidSnapshot) {
@@ -243,7 +342,30 @@ func validationParentChildPlan(t *testing.T) *Plan {
 	plan, err := NewPlan([]Phase{
 		{Name: "parent", Enter: noop, Exit: noop, Rollback: noop},
 		{Name: "child", DependsOn: []string{"parent"}, Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "witness", Enter: noop, Exit: noop, Rollback: noop},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
+func validationParentChildStates(run RunStatus, parent, child PhaseState) map[string]PhaseState {
+	witness := PhaseState{Status: PhaseEntered, Attempts: 1}
+	if run == RunRollingBack {
+		witness = PhaseState{Status: PhaseEnterFailed, Attempts: 1}
+	}
+	return map[string]PhaseState{"parent": parent, "child": child, "witness": witness}
+}
+
+func validationIndependentPlan(t *testing.T, names ...string) *Plan {
+	t.Helper()
+	noop := func(context.Context) error { return nil }
+	phases := make([]Phase, 0, len(names))
+	for _, name := range names {
+		phases = append(phases, Phase{Name: name, Enter: noop, Exit: noop, Rollback: noop})
+	}
+	plan, err := NewPlan(phases)
 	if err != nil {
 		t.Fatal(err)
 	}

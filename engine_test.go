@@ -614,16 +614,29 @@ func TestEngineRetriesInterruptedExitAndRollback(t *testing.T) {
 		var enterCalls atomic.Int32
 		var exitCalls atomic.Int32
 		var rollbackCalls atomic.Int32
-		plan := singlePhasePlan(t, "phase", func(context.Context) error { enterCalls.Add(1); return nil }, func(context.Context) error { exitCalls.Add(1); return nil }, func(context.Context) error { rollbackCalls.Add(1); return nil })
+		noop := func(context.Context) error { return nil }
+		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+			{Name: "phase", Enter: func(context.Context) error { enterCalls.Add(1); return nil }, Exit: func(context.Context) error { exitCalls.Add(1); return nil }, Rollback: func(context.Context) error { rollbackCalls.Add(1); return nil }},
+			{Name: "failed", DependsOn: []string{"phase"}, Enter: noop, Exit: noop, Rollback: noop},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		store := memory.NewStore()
-		saveSnapshot(t, store, lifecycle.Snapshot{RunID: "rollback", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack, Phases: map[string]lifecycle.PhaseState{"phase": {Status: lifecycle.PhaseRollingBack, Attempts: 2}}})
+		saveSnapshot(t, store, lifecycle.Snapshot{
+			RunID: "rollback", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack,
+			Phases: map[string]lifecycle.PhaseState{
+				"phase":  {Status: lifecycle.PhaseRollingBack, Attempts: 2},
+				"failed": {Status: lifecycle.PhaseEnterFailed, Attempts: 1, LastError: "entry failed"},
+			},
+		})
 		engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		snapshot, err := engine.Run(context.Background(), "rollback")
-		if err != nil {
-			t.Fatal(err)
+		if err == nil || err.Error() != "entry failed" {
+			t.Fatalf("Run error = %v, want persisted entry failure", err)
 		}
 		if enterCalls.Load() != 0 || exitCalls.Load() != 0 || rollbackCalls.Load() != 1 {
 			t.Fatalf("calls = enter:%d exit:%d rollback:%d, want 0, 0, 1", enterCalls.Load(), exitCalls.Load(), rollbackCalls.Load())

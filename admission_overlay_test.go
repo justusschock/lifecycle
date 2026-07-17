@@ -81,6 +81,7 @@ func TestAdversarialSnapshotDependencyConsistency(t *testing.T) {
 	plan, err := NewPlan([]Phase{
 		{Name: "parent", Enter: noop, Exit: noop, Rollback: noop},
 		{Name: "child", DependsOn: []string{"parent"}, Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "witness", Enter: noop, Exit: noop, Rollback: noop},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,11 +98,16 @@ func TestAdversarialSnapshotDependencyConsistency(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			witness := adversarialPhaseState(PhaseEntered)
+			if test.status == RunRollingBack {
+				witness = adversarialPhaseState(PhaseEnterFailed)
+			}
 			snapshot := Snapshot{
 				RunID: "run", PlanDigest: plan.Digest(), Status: test.status,
 				Phases: map[string]PhaseState{
-					"parent": adversarialPhaseState(test.parent),
-					"child":  adversarialPhaseState(test.child),
+					"parent":  adversarialPhaseState(test.parent),
+					"child":   adversarialPhaseState(test.child),
+					"witness": witness,
 				},
 			}
 			if err := validateSnapshot(plan, "run", snapshot); !errors.Is(err, ErrInvalidSnapshot) || !strings.Contains(err.Error(), "dependency ordering") {
