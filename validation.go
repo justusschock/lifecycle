@@ -27,6 +27,9 @@ func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
 		if !knownPhaseStatus(state.Status) {
 			return invalidSnapshot("phase %q has unknown status %q", name, state.Status)
 		}
+		if err := validatePhaseState(name, state); err != nil {
+			return err
+		}
 	}
 	if !knownRunStatus(snapshot.Status) {
 		return invalidSnapshot("run has unknown status %q", snapshot.Status)
@@ -34,7 +37,88 @@ func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
 	if !consistentRunState(snapshot) {
 		return invalidSnapshot("phase statuses are inconsistent with run status %q", snapshot.Status)
 	}
+	if snapshot.Status == RunRollingBack && hasStatus(snapshot, PhaseEntering) && hasAnyStatus(snapshot, PhaseRollingBack, PhaseRolledBack, PhaseRollbackFailed) {
+		return invalidSnapshot("rollback cleanup started while entry remains in progress")
+	}
+	if err := validateDependencyOrdering(plan, snapshot); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validatePhaseState(name string, state PhaseState) error {
+	minimumAttempts := uint(0)
+	allowsError := false
+	switch state.Status {
+	case PhasePending:
+		if state.Attempts != 0 {
+			return invalidSnapshot("phase state for %q is pending with %d attempts", name, state.Attempts)
+		}
+	case PhaseEntering, PhaseEntered:
+		minimumAttempts = 1
+	case PhaseEnterFailed:
+		minimumAttempts = 1
+		allowsError = true
+	case PhaseExiting, PhaseExited, PhaseRollingBack, PhaseRolledBack:
+		minimumAttempts = 2
+	case PhaseExitFailed, PhaseRollbackFailed:
+		minimumAttempts = 2
+		allowsError = true
+	}
+	if state.Attempts < minimumAttempts {
+		return invalidSnapshot("phase state for %q is %q with %d attempts, want at least %d", name, state.Status, state.Attempts, minimumAttempts)
+	}
+	if !allowsError && state.LastError != "" {
+		return invalidSnapshot("phase state for %q is %q with stale error text", name, state.Status)
+	}
+	return nil
+}
+
+func validateDependencyOrdering(plan *Plan, snapshot Snapshot) error {
+	for _, level := range plan.levels {
+		for _, name := range level {
+			state := snapshot.Phases[name]
+			for _, dependency := range plan.phases[name].DependsOn {
+				dependencyState := snapshot.Phases[dependency]
+				if state.Status != PhasePending && !hasSuccessfulEntryEvidence(dependencyState.Status) {
+					return invalidSnapshot("dependency ordering: phase %q is %q before dependency %q has successful entry evidence", name, state.Status, dependency)
+				}
+				if exitCleanupStarted(dependencyState.Status) && !exitCleanupResolved(state.Status) {
+					return invalidSnapshot("dependency ordering: phase %q is %q while dependency %q has started exit cleanup", name, state.Status, dependency)
+				}
+				if rollbackCleanupStarted(dependencyState.Status) && !rollbackCleanupResolved(state.Status) {
+					return invalidSnapshot("dependency ordering: phase %q is %q while dependency %q has started rollback cleanup", name, state.Status, dependency)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func hasSuccessfulEntryEvidence(status PhaseStatus) bool {
+	switch status {
+	case PhaseEntered, PhaseExiting, PhaseExited, PhaseExitFailed,
+		PhaseRollingBack, PhaseRolledBack, PhaseRollbackFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func exitCleanupStarted(status PhaseStatus) bool {
+	return status == PhaseExiting || status == PhaseExited || status == PhaseExitFailed
+}
+
+func exitCleanupResolved(status PhaseStatus) bool {
+	return status == PhaseExited || status == PhaseExitFailed
+}
+
+func rollbackCleanupStarted(status PhaseStatus) bool {
+	return status == PhaseRollingBack || status == PhaseRolledBack || status == PhaseRollbackFailed
+}
+
+func rollbackCleanupResolved(status PhaseStatus) bool {
+	return status == PhasePending || status == PhaseEnterFailed || status == PhaseRolledBack || status == PhaseRollbackFailed
 }
 
 func knownPhaseStatus(status PhaseStatus) bool {
@@ -113,6 +197,15 @@ func allStatusesIn(snapshot Snapshot, allowed ...PhaseStatus) bool {
 func hasStatus(snapshot Snapshot, status PhaseStatus) bool {
 	for _, state := range snapshot.Phases {
 		if state.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyStatus(snapshot Snapshot, statuses ...PhaseStatus) bool {
+	for _, status := range statuses {
+		if hasStatus(snapshot, status) {
 			return true
 		}
 	}

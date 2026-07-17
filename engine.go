@@ -236,6 +236,9 @@ func scheduledAction(kind scheduleKind, phase Phase) (Action, PhaseStatus, Phase
 }
 
 func (e *Engine) readyPhases(snapshot Snapshot, running map[string]struct{}, dependents map[string][]string, kind scheduleKind) []Phase {
+	if !runStatusAllowsSchedule(snapshot.Status, kind) {
+		return nil
+	}
 	ready := make([]Phase, 0)
 	for _, name := range e.lexicalPhaseNames() {
 		if _, active := running[name]; active {
@@ -297,12 +300,28 @@ func isScheduleCandidate(status PhaseStatus, kind scheduleKind) bool {
 }
 
 func (e *Engine) hasCandidates(snapshot Snapshot, kind scheduleKind) bool {
+	if !runStatusAllowsSchedule(snapshot.Status, kind) {
+		return false
+	}
 	for _, state := range snapshot.Phases {
 		if isScheduleCandidate(state.Status, kind) {
 			return true
 		}
 	}
 	return false
+}
+
+func runStatusAllowsSchedule(status RunStatus, kind scheduleKind) bool {
+	switch kind {
+	case scheduleEnter:
+		return status == RunPending || status == RunRunning
+	case scheduleRetryEnter, scheduleRollback:
+		return status == RunRollingBack
+	case scheduleExit:
+		return status == RunRunning
+	default:
+		return false
+	}
 }
 
 func (e *Engine) scheduleInterruption(result scheduleResult) error {

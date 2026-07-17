@@ -76,8 +76,12 @@ func (r *runner) runAction(
 	failed PhaseStatus,
 	failedRunStatus RunStatus,
 ) actionExecution {
-	if err := r.transition(persistCtx, phase.Name, inProgress, "", true, ""); err != nil {
+	admitted, err := r.beginAction(persistCtx, phase.Name, inProgress)
+	if err != nil {
 		return actionExecution{persistenceErr: err}
+	}
+	if !admitted {
+		return actionExecution{}
 	}
 
 	actionErr := action(actionCtx)
@@ -91,11 +95,52 @@ func (r *runner) runAction(
 	if actionErr != nil {
 		runStatus = failedRunStatus
 	}
-	persistenceErr := r.transition(persistCtx, phase.Name, terminal, lastError, false, runStatus)
+	persistenceErr := r.transition(persistCtx, phase.Name, terminal, lastError, runStatus)
 	return actionExecution{actionErr: actionErr, persistenceErr: persistenceErr}
 }
 
-func (r *runner) transition(ctx context.Context, name string, status PhaseStatus, lastError string, increment bool, runStatus RunStatus) error {
+func (r *runner) beginAction(ctx context.Context, name string, status PhaseStatus) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.snapshot.Phases[name]
+	if !actionAdmissionAllowed(r.snapshot.Status, current.Status, status) {
+		return false, nil
+	}
+	candidate := cloneSnapshot(r.snapshot)
+	state := candidate.Phases[name]
+	state.Status = status
+	state.Attempts++
+	state.LastError = ""
+	state.UpdatedAt = r.clock()
+	candidate.Phases[name] = state
+	if candidate.Status == RunPending {
+		candidate.Status = RunRunning
+	}
+	candidate.UpdatedAt = state.UpdatedAt
+	if err := r.store.Save(ctx, cloneSnapshot(candidate)); err != nil {
+		return false, wrapPersistenceError(err)
+	}
+	r.snapshot = candidate
+	return true, nil
+}
+
+func actionAdmissionAllowed(runStatus RunStatus, current, inProgress PhaseStatus) bool {
+	switch inProgress {
+	case PhaseEntering:
+		if current == PhasePending {
+			return runStatus == RunPending || runStatus == RunRunning
+		}
+		return current == PhaseEntering && (runStatus == RunRunning || runStatus == RunRollingBack)
+	case PhaseExiting:
+		return runStatus == RunRunning && (current == PhaseEntered || current == PhaseExiting)
+	case PhaseRollingBack:
+		return runStatus == RunRollingBack && (current == PhaseEntered || current == PhaseRollingBack)
+	default:
+		return false
+	}
+}
+
+func (r *runner) transition(ctx context.Context, name string, status PhaseStatus, lastError string, runStatus RunStatus) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	candidate := cloneSnapshot(r.snapshot)
@@ -103,9 +148,6 @@ func (r *runner) transition(ctx context.Context, name string, status PhaseStatus
 	state.Status = status
 	state.LastError = lastError
 	state.UpdatedAt = r.clock()
-	if increment {
-		state.Attempts++
-	}
 	candidate.Phases[name] = state
 	if candidate.Status == RunPending {
 		candidate.Status = RunRunning
