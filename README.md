@@ -139,7 +139,7 @@ once the run resumes. Completed actions are not repeated.
 
 | Durable phase status | Recovery behavior |
 | --- | --- |
-| `pending` | Run `Enter` when its level is reached. |
+| `pending` | Run `Enter` when all dependencies are durably `entered`. |
 | `entering` | Retry `Enter`. |
 | `entered` | Skip `Enter`; later run `Exit`, or `Rollback` after entry failure. |
 | `enter_failed` | Preserve the entry failure while outstanding rollback completes. |
