@@ -286,8 +286,8 @@ The dependency graph should contain only this module and `go-concurrency`:
 go list -m all
 ```
 
-Local implementation plans and reports live under `docs/` and are intentionally
-excluded from Git.
+Local implementation plans live under `docs/`; implementation reports live
+under `.superpowers/`. Both are intentionally excluded from Git.
 
 ## License
 
