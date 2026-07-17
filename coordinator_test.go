@@ -211,6 +211,41 @@ func TestCoordinatorPersistenceFailureStopsAdmission(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCanceledAdmissionDoesNotStopLaterAdmission(t *testing.T) {
+	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+	coordinator := openCoordinator(t, topology, memory.NewStore(), "canceled-admission", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := coordinator.EnterPhase(ctx, "phase"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled admission error = %v, want %v", err, context.Canceled)
+	}
+	completePhase(t, enterPhase(t, coordinator, "phase"), nil)
+}
+
+func TestCoordinatorCompletionRetryRestoresAdmission(t *testing.T) {
+	failure := errors.New("save failed")
+	store := newRecordingStore()
+	store.failAt = 2
+	store.failure = failure
+	topology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "root"},
+		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+	)
+	coordinator := openCoordinator(t, topology, store, "completion-retry", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+
+	root := enterPhase(t, coordinator, "root")
+	if err := root.Complete(context.Background(), nil); !errors.Is(err, failure) {
+		t.Fatalf("first completion error = %v, want %v", err, failure)
+	}
+	if err := root.Complete(context.Background(), nil); err != nil {
+		t.Fatalf("completion retry error = %v", err)
+	}
+	completePhase(t, enterPhase(t, coordinator, "child"), nil)
+}
+
 func TestCoordinatorCloseReleasesOwnershipAfterCancellation(t *testing.T) {
 	store := memory.NewStore()
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
@@ -222,6 +257,24 @@ func TestCoordinatorCloseReleasesOwnershipAfterCancellation(t *testing.T) {
 	}
 
 	reopened := openCoordinator(t, topology, store, "close-run", lifecycle.Options{})
+	closeCoordinator(t, reopened)
+}
+
+func TestCoordinatorCloseRetriesFailedRelease(t *testing.T) {
+	store := memory.NewStore()
+	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+	coordinator := openCoordinator(t, topology, store, "close-retry", lifecycle.Options{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := coordinator.Close(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first close error = %v, want %v", err, context.Canceled)
+	}
+	if err := coordinator.Close(context.Background()); err != nil {
+		t.Fatalf("close retry error = %v", err)
+	}
+
+	reopened := openCoordinator(t, topology, store, "close-retry", lifecycle.Options{})
 	closeCoordinator(t, reopened)
 }
 
