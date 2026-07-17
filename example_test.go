@@ -21,3 +21,34 @@ func ExampleEngine() {
 	fmt.Println(snapshot.Status)
 	// Output: succeeded
 }
+
+func ExampleCoordinator_EnterPhase() {
+	topology, _ := lifecycle.NewTopology([]lifecycle.PhaseSpec{
+		{Name: "root"},
+		{Name: "child", DependsOn: []string{"root"}},
+	})
+	coordinator, _ := lifecycle.OpenCoordinator(context.Background(), topology, memory.NewStore(), "example", lifecycle.Options{})
+	defer coordinator.Close(context.Background())
+
+	childResult := make(chan *lifecycle.Execution, 1)
+	go func() {
+		execution, _ := coordinator.EnterPhase(context.Background(), "child")
+		childResult <- execution
+	}()
+	root, _ := coordinator.EnterPhase(context.Background(), "root")
+	_ = root.Complete(context.Background(), nil)
+	child := <-childResult
+	_ = child.Complete(context.Background(), nil)
+
+	rootExit := make(chan *lifecycle.Execution, 1)
+	go func() {
+		execution, _ := coordinator.ExitPhase(context.Background(), "root")
+		rootExit <- execution
+	}()
+	childExit, _ := coordinator.ExitPhase(context.Background(), "child")
+	_ = childExit.Complete(context.Background(), nil)
+	_ = (<-rootExit).Complete(context.Background(), nil)
+
+	fmt.Println(coordinator.Snapshot().Status)
+	// Output: succeeded
+}

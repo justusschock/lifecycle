@@ -14,9 +14,9 @@ Module path: `github.com/justusschock/go-lifecycle`
 
 ## Requirements and installation
 
-Go 1.26 or newer is required. The only non-standard dependency is
+Go 1.22 or newer is required. The only non-standard dependency is
 [`github.com/justusschock/go-concurrency`](https://github.com/justusschock/go-concurrency),
-pinned to `v0.1.0`.
+pinned to `v0.2.0`.
 
 Configure private-module access through normal GitHub authentication before
 installing the module. Do not put credentials in commands, source files, or Go
@@ -24,8 +24,51 @@ environment settings.
 
 ```bash
 go env -w GOPRIVATE='github.com/justusschock/*'
-go get github.com/justusschock/go-lifecycle@v0.1.0
+go get github.com/justusschock/go-lifecycle@v0.2.0
 ```
+
+## Topology and direct coordination
+
+`Topology` is the callback-free dependency graph. A `Coordinator` owns the
+fenced store session and durable lifecycle state for one run. It blocks
+`EnterPhase` until dependencies have durably entered and capacity is available;
+the returned `Execution` exposes a cancellation-aware `Context`, reports
+whether work is required through `ShouldRun`, and must be concluded with its
+durable `Complete` call.
+
+```go
+topology, err := lifecycle.NewTopology([]lifecycle.PhaseSpec{
+	{Name: "prepare"},
+	{Name: "publish", DependsOn: []string{"prepare"}},
+})
+if err != nil {
+	return err
+}
+coordinator, err := lifecycle.OpenCoordinator(ctx, topology, store, "deployment-42", lifecycle.Options{})
+if err != nil {
+	return err
+}
+defer coordinator.Close(context.WithoutCancel(ctx))
+
+execution, err := coordinator.EnterPhase(ctx, "prepare")
+if err != nil {
+	return err
+}
+if execution.ShouldRun() {
+	if err := prepare(execution.Context()); err != nil {
+		return execution.Complete(ctx, err)
+	}
+	if err := execution.Complete(ctx, nil); err != nil {
+		return err
+	}
+}
+```
+
+Direct users own the complete traversal: after all successful entries, call
+`ExitPhase` in reverse dependency order and complete each execution; after an
+entry failure, retry any durable `entering` work and call `RollbackPhase` in
+reverse dependency order. `ExitPhase` is intentionally unavailable until all
+entries have resolved, which keeps every persisted snapshot recoverable.
 
 ## Lifecycle plans
 
@@ -98,7 +141,8 @@ if err != nil {
 fmt.Println(snapshot.Status) // succeeded
 ```
 
-`Run` performs a complete lifecycle:
+`Engine` is the automatic callback driver over the same Coordinator state
+machine. `Run` performs a complete lifecycle:
 
 1. Admit lexically sorted phases whose dependencies have durably entered.
 2. Start a dependent as soon as its own dependencies finish, without waiting
