@@ -18,6 +18,11 @@ type persistenceError struct {
 	err error
 }
 
+type actionExecution struct {
+	actionErr      error
+	persistenceErr error
+}
+
 func (e *persistenceError) Error() string {
 	return e.err.Error()
 }
@@ -67,27 +72,33 @@ func (r *runner) setRunStatus(ctx context.Context, status RunStatus) error {
 	return nil
 }
 
-func (r *runner) runAction(persistCtx, actionCtx context.Context, phase Phase, action Action, inProgress, completed PhaseStatus, failedRunStatus RunStatus) error {
+func (r *runner) runAction(
+	persistCtx context.Context,
+	actionCtx context.Context,
+	phase Phase,
+	action Action,
+	inProgress PhaseStatus,
+	completed PhaseStatus,
+	failed PhaseStatus,
+	failedRunStatus RunStatus,
+) actionExecution {
 	if err := r.transition(persistCtx, phase.Name, inProgress, "", true, ""); err != nil {
-		return err
+		return actionExecution{persistenceErr: err}
 	}
 
 	actionErr := action(actionCtx)
-	if isPersistenceError(actionErr) {
-		return actionErr
-	}
 	terminal := completed
 	lastError := ""
 	if actionErr != nil {
-		terminal = PhaseFailed
+		terminal = failed
 		lastError = actionErr.Error()
 	}
 	runStatus := RunStatus("")
 	if actionErr != nil {
 		runStatus = failedRunStatus
 	}
-	saveErr := r.transition(persistCtx, phase.Name, terminal, lastError, false, runStatus)
-	return errors.Join(actionErr, saveErr)
+	persistenceErr := r.transition(persistCtx, phase.Name, terminal, lastError, false, runStatus)
+	return actionExecution{actionErr: actionErr, persistenceErr: persistenceErr}
 }
 
 func (r *runner) transition(ctx context.Context, name string, status PhaseStatus, lastError string, increment bool, runStatus RunStatus) error {

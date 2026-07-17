@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	concurrency "github.com/justusschock/go-concurrency"
@@ -48,8 +49,7 @@ func (e *Engine) Run(ctx context.Context, runID string) (result Snapshot, result
 		return Snapshot{}, fmt.Errorf("%w: store returned a nil session", ErrInvalidSnapshot)
 	}
 	defer func() {
-		releaseErr := session.Release(context.WithoutCancel(ctx))
-		resultErr = errors.Join(resultErr, releaseErr)
+		resultErr = errors.Join(resultErr, session.Release(context.WithoutCancel(ctx)))
 	}()
 	if session.RunID() != runID {
 		return Snapshot{}, fmt.Errorf("%w: store returned session for %q, want %q", ErrInvalidSnapshot, session.RunID(), runID)
@@ -62,69 +62,33 @@ func (e *Engine) Run(ctx context.Context, runID string) (result Snapshot, result
 		}
 		snapshot = e.newSnapshot(runID)
 	} else {
-		if snapshot.PlanDigest != e.plan.Digest() {
-			return snapshot, ErrPlanChanged
+		if err := validateSnapshot(e.plan, runID, snapshot); err != nil {
+			return snapshot, err
 		}
 		if isTerminal(snapshot.Status) {
 			return snapshot, ErrRunTerminal
 		}
-		e.ensurePhases(&snapshot)
 	}
 
 	run := newRunner(session, e.options.Clock, snapshot)
 	if snapshot.Status == RunRollingBack {
-		rollbackErr := e.rollback(ctx, run)
-		if isPersistenceError(rollbackErr) {
-			return run.current(), rollbackErr
-		}
-		return e.finishRollback(ctx, run, rollbackErr)
+		return e.resumeRollback(ctx, run, nil)
 	}
 
-	if failure := existingFailure(e.plan.Levels(), snapshot); failure != nil {
-		if statusErr := run.setRunStatus(ctx, RunRollingBack); statusErr != nil {
-			return run.current(), errors.Join(failure, statusErr)
-		}
-		rollbackErr := e.rollback(ctx, run)
-		if isPersistenceError(rollbackErr) {
-			return run.current(), errors.Join(failure, rollbackErr)
-		}
-		result, finishErr := e.finishRollback(ctx, run, rollbackErr)
-		return result, errors.Join(failure, finishErr)
+	entry := e.schedule(ctx, run, scheduleEnter, true)
+	if interruption := e.scheduleInterruption(entry); interruption != nil {
+		return run.current(), interruption
 	}
-
-	if err := e.enter(ctx, run); err != nil {
-		if isPersistenceError(err) {
-			return run.current(), err
-		}
-		if statusErr := run.setRunStatus(ctx, RunRollingBack); statusErr != nil {
-			return run.current(), errors.Join(err, statusErr)
-		}
-		rollbackErr := e.rollback(ctx, run)
-		if isPersistenceError(rollbackErr) {
-			return run.current(), errors.Join(err, rollbackErr)
-		}
-		result, finishErr := e.finishRollback(ctx, run, rollbackErr)
-		return result, errors.Join(err, finishErr)
+	if run.current().Status == RunRollingBack {
+		return e.resumeRollback(ctx, run, entry.liveErrors)
 	}
-	if err := e.exit(ctx, run); err != nil {
-		if isPersistenceError(err) {
-			return run.current(), err
-		}
-		statusErr := run.setRunStatus(ctx, RunFailed)
-		return run.current(), errors.Join(err, statusErr)
-	}
-	if err := run.setRunStatus(ctx, RunSucceeded); err != nil {
-		return run.current(), err
-	}
-	return run.current(), nil
+	return e.resumeExit(ctx, run)
 }
 
 func (e *Engine) newSnapshot(runID string) Snapshot {
-	phases := make(map[string]PhaseState)
-	for _, level := range e.plan.Levels() {
-		for _, phase := range level {
-			phases[phase.Name] = PhaseState{Status: PhasePending}
-		}
+	phases := make(map[string]PhaseState, len(e.plan.phases))
+	for name := range e.plan.phases {
+		phases[name] = PhaseState{Status: PhasePending}
 	}
 	return Snapshot{
 		RunID:      runID,
@@ -135,125 +99,306 @@ func (e *Engine) newSnapshot(runID string) Snapshot {
 	}
 }
 
-func (e *Engine) ensurePhases(snapshot *Snapshot) {
-	if snapshot.Phases == nil {
-		snapshot.Phases = make(map[string]PhaseState)
+func (e *Engine) resumeExit(ctx context.Context, run *runner) (Snapshot, error) {
+	exit := e.schedule(ctx, run, scheduleExit, false)
+	exitErr := e.stageErrors(run.current(), PhaseExitFailed, exit.liveErrors)
+	if interruption := e.scheduleInterruption(exit); interruption != nil {
+		return run.current(), errors.Join(exitErr, interruption)
 	}
-	for _, level := range e.plan.Levels() {
-		for _, phase := range level {
-			if _, exists := snapshot.Phases[phase.Name]; !exists {
-				snapshot.Phases[phase.Name] = PhaseState{Status: PhasePending}
-			}
-		}
+
+	status := RunSucceeded
+	if exitErr != nil {
+		status = RunFailed
+	} else if !e.allPhasesHaveStatus(run.current(), PhaseExited) {
+		return run.current(), fmt.Errorf("%w: exit traversal left unresolved phases", ErrInvalidSnapshot)
 	}
+	statusErr := run.setRunStatus(ctx, status)
+	return run.current(), errors.Join(exitErr, statusErr)
 }
 
-func (e *Engine) enter(ctx context.Context, run *runner) error {
-	for _, level := range e.plan.Levels() {
-		phases := selectPhases(level, run, PhasePending, PhaseEntering)
-		if err := e.runLevel(ctx, run, phases, func(actionCtx context.Context, phase Phase) error {
-			return run.runAction(ctx, actionCtx, phase, phase.Enter, PhaseEntering, PhaseEntered, RunRollingBack)
-		}); err != nil {
-			return err
-		}
+func (e *Engine) resumeRollback(ctx context.Context, run *runner, liveEntryErrors map[string]error) (Snapshot, error) {
+	retried := e.schedule(ctx, run, scheduleRetryEnter, false)
+	liveEntryErrors = mergeErrorMaps(liveEntryErrors, retried.liveErrors)
+	entryErr := e.stageErrors(run.current(), PhaseEnterFailed, liveEntryErrors)
+	if interruption := e.scheduleInterruption(retried); interruption != nil {
+		return run.current(), errors.Join(entryErr, interruption)
 	}
-	return nil
-}
 
-func (e *Engine) exit(ctx context.Context, run *runner) error {
-	levels := e.plan.Levels()
-	for index := len(levels) - 1; index >= 0; index-- {
-		phases := selectPhases(levels[index], run, PhaseEntered, PhaseExiting)
-		if err := e.runLevel(ctx, run, phases, func(actionCtx context.Context, phase Phase) error {
-			return run.runAction(ctx, actionCtx, phase, phase.Exit, PhaseExiting, PhaseExited, RunFailed)
-		}); err != nil {
-			return err
-		}
+	rollback := e.schedule(ctx, run, scheduleRollback, false)
+	entryErr = e.stageErrors(run.current(), PhaseEnterFailed, liveEntryErrors)
+	rollbackErr := e.stageErrors(run.current(), PhaseRollbackFailed, rollback.liveErrors)
+	if interruption := e.scheduleInterruption(rollback); interruption != nil {
+		return run.current(), errors.Join(entryErr, rollbackErr, interruption)
 	}
-	return nil
-}
 
-func (e *Engine) rollback(ctx context.Context, run *runner) error {
-	levels := e.plan.Levels()
-	var rollbackErrors []error
-	for index := len(levels) - 1; index >= 0; index-- {
-		phases := selectPhases(levels[index], run, PhaseEntered, PhaseRollingBack)
-		if err := e.runRollbackLevel(ctx, run, phases); err != nil {
-			rollbackErrors = append(rollbackErrors, err)
-			if isPersistenceError(err) {
-				return errors.Join(rollbackErrors...)
-			}
-		}
-	}
-	return errors.Join(rollbackErrors...)
-}
-
-func (e *Engine) runRollbackLevel(ctx context.Context, run *runner, phases []Phase) error {
-	if len(phases) == 0 {
-		return nil
-	}
-	results, err := concurrency.ParallelMap(ctx, phases, e.options.MaxParallel, func(actionCtx context.Context, phase Phase) (error, error) {
-		actionErr := run.runAction(ctx, actionCtx, phase, phase.Rollback, PhaseRollingBack, PhaseRolledBack, RunFailed)
-		if isPersistenceError(actionErr) {
-			return nil, actionErr
-		}
-		return actionErr, nil
-	})
-	if err != nil {
-		return err
-	}
-	return errors.Join(results...)
-}
-
-func (e *Engine) runLevel(ctx context.Context, run *runner, phases []Phase, action func(context.Context, Phase) error) error {
-	if len(phases) == 0 {
-		return nil
-	}
-	_, err := concurrency.ParallelMap(ctx, phases, e.options.MaxParallel, func(actionCtx context.Context, phase Phase) (struct{}, error) {
-		return struct{}{}, action(actionCtx, phase)
-	})
-	return err
-}
-
-func (e *Engine) finishRollback(ctx context.Context, run *runner, rollbackErr error) (Snapshot, error) {
 	status := RunRolledBack
 	if rollbackErr != nil {
 		status = RunFailed
 	}
 	statusErr := run.setRunStatus(ctx, status)
-	return run.current(), errors.Join(rollbackErr, statusErr)
+	return run.current(), errors.Join(entryErr, rollbackErr, statusErr)
 }
 
-func selectPhases(level []Phase, run *runner, statuses ...PhaseStatus) []Phase {
-	selected := make([]Phase, 0, len(level))
-	for _, phase := range level {
-		status := run.phaseStatus(phase.Name)
-		for _, candidate := range statuses {
-			if status == candidate {
-				selected = append(selected, phase)
-				break
+type scheduleKind uint8
+
+const (
+	scheduleEnter scheduleKind = iota
+	scheduleRetryEnter
+	scheduleExit
+	scheduleRollback
+)
+
+type scheduledCompletion struct {
+	name      string
+	execution actionExecution
+}
+
+type scheduleResult struct {
+	liveErrors        map[string]error
+	interruptedErrors map[string]error
+	controlErr        error
+}
+
+func (e *Engine) schedule(ctx context.Context, run *runner, kind scheduleKind, stopOnActionFailure bool) scheduleResult {
+	result := scheduleResult{
+		liveErrors:        make(map[string]error),
+		interruptedErrors: make(map[string]error),
+	}
+	actionCtx, cancelActions := context.WithCancelCause(ctx)
+	defer cancelActions(nil)
+	completions := make(chan scheduledCompletion, e.options.MaxParallel)
+	running := make(map[string]struct{})
+	dependents := e.dependents()
+	halted := false
+
+	for {
+		if !halted {
+			for len(running) < e.options.MaxParallel {
+				ready := e.readyPhases(run.current(), running, dependents, kind)
+				if len(ready) == 0 {
+					break
+				}
+				available := e.options.MaxParallel - len(running)
+				if len(ready) > available {
+					ready = ready[:available]
+				}
+				for _, phase := range ready {
+					phase := phase
+					running[phase.Name] = struct{}{}
+					_ = concurrency.Go(actionCtx, func(taskCtx context.Context) (struct{}, error) {
+						action, inProgress, completed, failed, failedRunStatus := scheduledAction(kind, phase)
+						execution := run.runAction(ctx, taskCtx, phase, action, inProgress, completed, failed, failedRunStatus)
+						completions <- scheduledCompletion{name: phase.Name, execution: execution}
+						return struct{}{}, nil
+					})
+				}
+			}
+		}
+
+		if len(running) == 0 {
+			if !halted && e.hasCandidates(run.current(), kind) {
+				result.controlErr = fmt.Errorf("%w: %s scheduler has blocked phases", ErrInvalidSnapshot, kind)
+			}
+			return result
+		}
+
+		completion := <-completions
+		delete(running, completion.name)
+		execution := completion.execution
+		if execution.persistenceErr != nil {
+			interrupted := errors.Join(execution.actionErr, execution.persistenceErr)
+			result.interruptedErrors[completion.name] = interrupted
+			halted = true
+			cancelActions(interrupted)
+			continue
+		}
+		if execution.actionErr != nil {
+			result.liveErrors[completion.name] = execution.actionErr
+			if stopOnActionFailure {
+				halted = true
+				cancelActions(execution.actionErr)
 			}
 		}
 	}
-	return selected
 }
 
-func existingFailure(levels [][]Phase, snapshot Snapshot) error {
-	var failures []error
-	for _, level := range levels {
-		for _, phase := range level {
-			state := snapshot.Phases[phase.Name]
-			if state.Status != PhaseFailed {
-				continue
-			}
-			if state.LastError == "" {
-				failures = append(failures, fmt.Errorf("phase %q failed", phase.Name))
-			} else {
-				failures = append(failures, errors.New(state.LastError))
+func scheduledAction(kind scheduleKind, phase Phase) (Action, PhaseStatus, PhaseStatus, PhaseStatus, RunStatus) {
+	switch kind {
+	case scheduleEnter, scheduleRetryEnter:
+		return phase.Enter, PhaseEntering, PhaseEntered, PhaseEnterFailed, RunRollingBack
+	case scheduleExit:
+		return phase.Exit, PhaseExiting, PhaseExited, PhaseExitFailed, ""
+	case scheduleRollback:
+		return phase.Rollback, PhaseRollingBack, PhaseRolledBack, PhaseRollbackFailed, ""
+	default:
+		panic("unknown lifecycle schedule kind")
+	}
+}
+
+func (e *Engine) readyPhases(snapshot Snapshot, running map[string]struct{}, dependents map[string][]string, kind scheduleKind) []Phase {
+	ready := make([]Phase, 0)
+	for _, name := range e.lexicalPhaseNames() {
+		if _, active := running[name]; active {
+			continue
+		}
+		if !isScheduleCandidate(snapshot.Phases[name].Status, kind) || !e.phaseReady(snapshot, name, dependents, kind) {
+			continue
+		}
+		ready = append(ready, e.plan.phases[name])
+	}
+	return ready
+}
+
+func (e *Engine) phaseReady(snapshot Snapshot, name string, dependents map[string][]string, kind scheduleKind) bool {
+	switch kind {
+	case scheduleRetryEnter:
+		return true
+	case scheduleEnter:
+		for _, dependency := range e.plan.phases[name].DependsOn {
+			if snapshot.Phases[dependency].Status != PhaseEntered {
+				return false
 			}
 		}
+		return true
+	case scheduleExit:
+		for _, dependent := range dependents[name] {
+			status := snapshot.Phases[dependent].Status
+			if status != PhaseExited && status != PhaseExitFailed {
+				return false
+			}
+		}
+		return true
+	case scheduleRollback:
+		for _, dependent := range dependents[name] {
+			status := snapshot.Phases[dependent].Status
+			if status != PhasePending && status != PhaseEnterFailed && status != PhaseRolledBack && status != PhaseRollbackFailed {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
-	return errors.Join(failures...)
+}
+
+func isScheduleCandidate(status PhaseStatus, kind scheduleKind) bool {
+	switch kind {
+	case scheduleEnter:
+		return status == PhasePending || status == PhaseEntering
+	case scheduleRetryEnter:
+		return status == PhaseEntering
+	case scheduleExit:
+		return status == PhaseEntered || status == PhaseExiting
+	case scheduleRollback:
+		return status == PhaseEntered || status == PhaseRollingBack
+	default:
+		return false
+	}
+}
+
+func (e *Engine) hasCandidates(snapshot Snapshot, kind scheduleKind) bool {
+	for _, state := range snapshot.Phases {
+		if isScheduleCandidate(state.Status, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) scheduleInterruption(result scheduleResult) error {
+	return errors.Join(e.orderedErrors(result.interruptedErrors), result.controlErr)
+}
+
+func (e *Engine) stageErrors(snapshot Snapshot, failed PhaseStatus, liveErrors map[string]error) error {
+	ordered := make(map[string]error)
+	for name, state := range snapshot.Phases {
+		if state.Status != failed {
+			continue
+		}
+		if liveErr := liveErrors[name]; liveErr != nil {
+			ordered[name] = liveErr
+		} else if state.LastError != "" {
+			ordered[name] = errors.New(state.LastError)
+		} else {
+			ordered[name] = fmt.Errorf("phase %q failed during %s", name, failed)
+		}
+	}
+	return e.orderedErrors(ordered)
+}
+
+func (e *Engine) orderedErrors(byPhase map[string]error) error {
+	errs := make([]error, 0, len(byPhase))
+	for _, name := range e.orderedPhaseNames() {
+		if err := byPhase[name]; err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func mergeErrorMaps(first, second map[string]error) map[string]error {
+	merged := make(map[string]error, len(first)+len(second))
+	for name, err := range first {
+		merged[name] = err
+	}
+	for name, err := range second {
+		merged[name] = err
+	}
+	return merged
+}
+
+func (e *Engine) allPhasesHaveStatus(snapshot Snapshot, status PhaseStatus) bool {
+	for _, state := range snapshot.Phases {
+		if state.Status != status {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) lexicalPhaseNames() []string {
+	names := make([]string, 0, len(e.plan.phases))
+	for name := range e.plan.phases {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+func (e *Engine) orderedPhaseNames() []string {
+	names := make([]string, 0, len(e.plan.phases))
+	for _, level := range e.plan.levels {
+		names = append(names, level...)
+	}
+	return names
+}
+
+func (e *Engine) dependents() map[string][]string {
+	dependents := make(map[string][]string, len(e.plan.phases))
+	for name, phase := range e.plan.phases {
+		for _, dependency := range phase.DependsOn {
+			dependents[dependency] = append(dependents[dependency], name)
+		}
+	}
+	for name := range dependents {
+		slices.Sort(dependents[name])
+	}
+	return dependents
+}
+
+func (kind scheduleKind) String() string {
+	switch kind {
+	case scheduleEnter:
+		return "entry"
+	case scheduleRetryEnter:
+		return "entry recovery"
+	case scheduleExit:
+		return "exit"
+	case scheduleRollback:
+		return "rollback"
+	default:
+		return "unknown"
+	}
 }
 
 func isTerminal(status RunStatus) bool {

@@ -8,14 +8,19 @@ import (
 type PhaseStatus string
 
 const (
-	PhasePending     PhaseStatus = "pending"
-	PhaseEntering    PhaseStatus = "entering"
-	PhaseEntered     PhaseStatus = "entered"
-	PhaseExiting     PhaseStatus = "exiting"
-	PhaseExited      PhaseStatus = "exited"
-	PhaseRollingBack PhaseStatus = "rolling_back"
-	PhaseRolledBack  PhaseStatus = "rolled_back"
-	PhaseFailed      PhaseStatus = "failed"
+	PhasePending        PhaseStatus = "pending"
+	PhaseEntering       PhaseStatus = "entering"
+	PhaseEntered        PhaseStatus = "entered"
+	PhaseExiting        PhaseStatus = "exiting"
+	PhaseExited         PhaseStatus = "exited"
+	PhaseRollingBack    PhaseStatus = "rolling_back"
+	PhaseRolledBack     PhaseStatus = "rolled_back"
+	PhaseEnterFailed    PhaseStatus = "enter_failed"
+	PhaseExitFailed     PhaseStatus = "exit_failed"
+	PhaseRollbackFailed PhaseStatus = "rollback_failed"
+
+	// PhaseFailed is retained as an alias for entry failures.
+	PhaseFailed = PhaseEnterFailed
 )
 
 type RunStatus string
