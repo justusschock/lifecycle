@@ -262,6 +262,77 @@ func TestRecoveredRollbackRetriesEnteringThenReturnsOriginalFailure(t *testing.T
 	}
 }
 
+func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *testing.T) {
+	var rootRollbacks atomic.Int32
+	noop := func(context.Context) error { return nil }
+	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+		{Name: "root", Enter: noop, Exit: noop, Rollback: func(context.Context) error { rootRollbacks.Add(1); return nil }},
+		{Name: "child", DependsOn: []string{"root"}, Enter: noop, Exit: noop, Rollback: noop},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.NewStore()
+	saveSnapshot(t, store, lifecycle.Snapshot{
+		RunID: "rollback-restart", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack,
+		Phases: map[string]lifecycle.PhaseState{
+			"root":  {Status: lifecycle.PhaseEntered},
+			"child": {Status: lifecycle.PhaseRollbackFailed, LastError: "child rollback failed"},
+		},
+	})
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.Run(context.Background(), "rollback-restart")
+	if err == nil || err.Error() != "child rollback failed" {
+		t.Fatalf("Run error = %v, want persisted rollback failure", err)
+	}
+	if snapshot.Status != lifecycle.RunFailed || snapshot.Phases["root"].Status != lifecycle.PhaseRolledBack {
+		t.Fatalf("snapshot = run:%q root:%q", snapshot.Status, snapshot.Phases["root"].Status)
+	}
+	if rootRollbacks.Load() != 1 {
+		t.Fatalf("root rollback calls = %d, want 1", rootRollbacks.Load())
+	}
+}
+
+func TestRecoveredExitPreservesFailureAndFinishesOutstandingCleanup(t *testing.T) {
+	var bExits atomic.Int32
+	var rootExits atomic.Int32
+	noop := func(context.Context) error { return nil }
+	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+		{Name: "root", Enter: noop, Exit: func(context.Context) error { rootExits.Add(1); return nil }, Rollback: noop},
+		{Name: "a", DependsOn: []string{"root"}, Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "b", DependsOn: []string{"root"}, Enter: noop, Exit: func(context.Context) error { bExits.Add(1); return nil }, Rollback: noop},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.NewStore()
+	saveSnapshot(t, store, lifecycle.Snapshot{
+		RunID: "exit-restart", PlanDigest: plan.Digest(), Status: lifecycle.RunRunning,
+		Phases: map[string]lifecycle.PhaseState{
+			"root": {Status: lifecycle.PhaseEntered},
+			"a":    {Status: lifecycle.PhaseExitFailed, LastError: "a exit failed"},
+			"b":    {Status: lifecycle.PhaseExiting},
+		},
+	})
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.Run(context.Background(), "exit-restart")
+	if err == nil || err.Error() != "a exit failed" {
+		t.Fatalf("Run error = %v, want persisted exit failure", err)
+	}
+	if snapshot.Status != lifecycle.RunFailed || snapshot.Phases["b"].Status != lifecycle.PhaseExited || snapshot.Phases["root"].Status != lifecycle.PhaseExited {
+		t.Fatalf("snapshot = run:%q b:%q root:%q", snapshot.Status, snapshot.Phases["b"].Status, snapshot.Phases["root"].Status)
+	}
+	if bExits.Load() != 1 || rootExits.Load() != 1 {
+		t.Fatalf("exit calls = b:%d root:%d, want 1 each", bExits.Load(), rootExits.Load())
+	}
+}
+
 func TestEngineValidatesLoadedSnapshots(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
@@ -367,6 +438,18 @@ func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsTypedNilSession(t *testing.T) {
+	noop := func(context.Context) error { return nil }
+	plan := singlePhasePlan(t, "phase", noop, noop, noop)
+	engine, err := lifecycle.NewEngine(plan, typedNilSessionStore{}, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Run(context.Background(), "run"); !errors.Is(err, lifecycle.ErrInvalidSnapshot) {
+		t.Fatalf("Run error = %v, want %v", err, lifecycle.ErrInvalidSnapshot)
+	}
+}
+
 type staticStore struct {
 	snapshot lifecycle.Snapshot
 }
@@ -391,3 +474,10 @@ func (session *staticSession) Save(_ context.Context, snapshot lifecycle.Snapsho
 }
 
 func (session *staticSession) Release(context.Context) error { return nil }
+
+type typedNilSessionStore struct{}
+
+func (typedNilSessionStore) Acquire(context.Context, string) (lifecycle.Session, error) {
+	var session *staticSession
+	return session, nil
+}
