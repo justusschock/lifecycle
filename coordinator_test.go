@@ -278,6 +278,146 @@ func TestCoordinatorCloseRetriesFailedRelease(t *testing.T) {
 	closeCoordinator(t, reopened)
 }
 
+func TestCoordinatorExitsInReverseDependencyOrder(t *testing.T) {
+	topology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "root"},
+		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+	)
+	coordinator := openCoordinator(t, topology, memory.NewStore(), "exit-order", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+	completePhase(t, enterPhase(t, coordinator, "root"), nil)
+	completePhase(t, enterPhase(t, coordinator, "child"), nil)
+
+	rootExit := exitAsync(coordinator, "root")
+	assertStillWaiting(t, rootExit)
+	completePhase(t, exitPhase(t, coordinator, "child"), nil)
+	completePhase(t, requireExecution(t, <-rootExit), nil)
+	if status := coordinator.Snapshot().Status; status != lifecycle.RunSucceeded {
+		t.Fatalf("run status = %q, want %q", status, lifecycle.RunSucceeded)
+	}
+}
+
+func TestCoordinatorRollsBackEnteredPhasesInReverseDependencyOrder(t *testing.T) {
+	failure := errors.New("entry failed")
+	topology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "root"},
+		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+		lifecycle.PhaseSpec{Name: "failing"},
+	)
+	coordinator := openCoordinator(t, topology, memory.NewStore(), "rollback-order", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+	completePhase(t, enterPhase(t, coordinator, "root"), nil)
+	completePhase(t, enterPhase(t, coordinator, "child"), nil)
+	if err := enterPhase(t, coordinator, "failing").Complete(context.Background(), failure); !errors.Is(err, failure) {
+		t.Fatalf("failure completion = %v, want %v", err, failure)
+	}
+
+	rootRollback := rollbackAsync(coordinator, "root")
+	assertStillWaiting(t, rootRollback)
+	completePhase(t, rollbackPhase(t, coordinator, "child"), nil)
+	completePhase(t, requireExecution(t, <-rootRollback), nil)
+	if status := coordinator.Snapshot().Status; status != lifecycle.RunRolledBack {
+		t.Fatalf("run status = %q, want %q", status, lifecycle.RunRolledBack)
+	}
+}
+
+func TestCoordinatorCleanupFailureDoesNotSuppressAncestors(t *testing.T) {
+	failure := errors.New("exit failed")
+	topology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "root"},
+		lifecycle.PhaseSpec{Name: "left", DependsOn: []string{"root"}},
+		lifecycle.PhaseSpec{Name: "right", DependsOn: []string{"root"}},
+	)
+	coordinator := openCoordinator(t, topology, memory.NewStore(), "cleanup-failure", lifecycle.Options{MaxParallel: 2})
+	defer closeCoordinator(t, coordinator)
+	completePhase(t, enterPhase(t, coordinator, "root"), nil)
+	completePhase(t, enterPhase(t, coordinator, "left"), nil)
+	completePhase(t, enterPhase(t, coordinator, "right"), nil)
+
+	left := exitPhase(t, coordinator, "left")
+	right := exitPhase(t, coordinator, "right")
+	completePhase(t, left, nil)
+	if err := right.Complete(context.Background(), failure); !errors.Is(err, failure) {
+		t.Fatalf("failed exit completion = %v, want %v", err, failure)
+	}
+	completePhase(t, exitPhase(t, coordinator, "root"), nil)
+	if status := coordinator.Snapshot().Status; status != lifecycle.RunFailed {
+		t.Fatalf("run status = %q, want %q", status, lifecycle.RunFailed)
+	}
+}
+
+func TestCoordinatorRetriesInterruptedExitAndRollback(t *testing.T) {
+	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+
+	exitStore := memory.NewStore()
+	exiting := openCoordinator(t, topology, exitStore, "retry-exit", lifecycle.Options{})
+	completePhase(t, enterPhase(t, exiting, "phase"), nil)
+	if execution := exitPhase(t, exiting, "phase"); !execution.ShouldRun() {
+		t.Fatal("initial exit did not require execution")
+	}
+	closeCoordinator(t, exiting)
+	exitRestart := openCoordinator(t, topology, exitStore, "retry-exit", lifecycle.Options{})
+	completePhase(t, exitPhase(t, exitRestart, "phase"), nil)
+	closeCoordinator(t, exitRestart)
+
+	rollbackStore := memory.NewStore()
+	rollingBack := openCoordinator(t, topology, rollbackStore, "retry-rollback", lifecycle.Options{})
+	phase := enterPhase(t, rollingBack, "phase")
+	if err := phase.Complete(context.Background(), errors.New("failed")); err == nil {
+		t.Fatal("entry failure completion returned nil")
+	}
+	closeCoordinator(t, rollingBack)
+	rollbackRestart := openCoordinator(t, topology, rollbackStore, "retry-rollback", lifecycle.Options{})
+	if execution := rollbackPhase(t, rollbackRestart, "phase"); execution.ShouldRun() {
+		t.Fatal("failed entry was admitted for rollback")
+	}
+	if status := rollbackRestart.Snapshot().Status; status != lifecycle.RunRolledBack {
+		t.Fatalf("run status = %q, want %q", status, lifecycle.RunRolledBack)
+	}
+	closeCoordinator(t, rollbackRestart)
+}
+
+func TestCoordinatorRollbackRetriesEnteringBeforeCleanup(t *testing.T) {
+	failure := errors.New("entry failed")
+	topology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "root"},
+		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+		lifecycle.PhaseSpec{Name: "failing"},
+	)
+	store := memory.NewStore()
+	coordinator := openCoordinator(t, topology, store, "rollback-entering", lifecycle.Options{MaxParallel: 2})
+	completePhase(t, enterPhase(t, coordinator, "root"), nil)
+	if execution := enterPhase(t, coordinator, "child"); !execution.ShouldRun() {
+		t.Fatal("child did not enter")
+	}
+	if err := enterPhase(t, coordinator, "failing").Complete(context.Background(), failure); !errors.Is(err, failure) {
+		t.Fatalf("failure completion = %v, want %v", err, failure)
+	}
+	closeCoordinator(t, coordinator)
+
+	restarted := openCoordinator(t, topology, store, "rollback-entering", lifecycle.Options{})
+	defer closeCoordinator(t, restarted)
+	child := enterPhase(t, restarted, "child")
+	rootRollback := rollbackAsync(restarted, "root")
+	assertStillWaiting(t, rootRollback)
+	completePhase(t, child, nil)
+	assertStillWaiting(t, rootRollback)
+	completePhase(t, rollbackPhase(t, restarted, "child"), nil)
+	completePhase(t, requireExecution(t, <-rootRollback), nil)
+}
+
+func TestCoordinatorRejectsStageOperationsInInvalidRunState(t *testing.T) {
+	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+	coordinator := openCoordinator(t, topology, memory.NewStore(), "invalid-stage", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+	if _, err := coordinator.ExitPhase(context.Background(), "phase"); err == nil {
+		t.Fatal("exit was accepted before entry")
+	}
+	if _, err := coordinator.RollbackPhase(context.Background(), "phase"); err == nil {
+		t.Fatal("rollback was accepted before entry failure")
+	}
+}
+
 func coordinatorTopology(t *testing.T, phases ...lifecycle.PhaseSpec) *lifecycle.Topology {
 	t.Helper()
 	topology, err := lifecycle.NewTopology(phases)
@@ -319,6 +459,48 @@ func enterAsync(coordinator *lifecycle.Coordinator, name string) <-chan coordina
 	result := make(chan coordinatorResult, 1)
 	go func() {
 		execution, err := coordinator.EnterPhase(context.Background(), name)
+		result <- coordinatorResult{execution: execution, err: err}
+	}()
+	return result
+}
+
+func exitPhase(t *testing.T, coordinator *lifecycle.Coordinator, name string) *lifecycle.Execution {
+	t.Helper()
+	execution, err := coordinator.ExitPhase(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !execution.ShouldRun() {
+		t.Fatalf("phase %q did not require exit", name)
+	}
+	return execution
+}
+
+func exitAsync(coordinator *lifecycle.Coordinator, name string) <-chan coordinatorResult {
+	result := make(chan coordinatorResult, 1)
+	go func() {
+		execution, err := coordinator.ExitPhase(context.Background(), name)
+		result <- coordinatorResult{execution: execution, err: err}
+	}()
+	return result
+}
+
+func rollbackPhase(t *testing.T, coordinator *lifecycle.Coordinator, name string) *lifecycle.Execution {
+	t.Helper()
+	execution, err := coordinator.RollbackPhase(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !execution.ShouldRun() {
+		t.Fatalf("phase %q did not require rollback", name)
+	}
+	return execution
+}
+
+func rollbackAsync(coordinator *lifecycle.Coordinator, name string) <-chan coordinatorResult {
+	result := make(chan coordinatorResult, 1)
+	go func() {
+		execution, err := coordinator.RollbackPhase(context.Background(), name)
 		result <- coordinatorResult{execution: execution, err: err}
 	}()
 	return result
