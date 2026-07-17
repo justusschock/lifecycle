@@ -437,6 +437,30 @@ func TestCoordinatorRejectsExitUntilAllEntriesResolve(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRetriesTerminalizationAfterSaveFailure(t *testing.T) {
+	failure := errors.New("terminal save failed")
+	store := newRecordingStore()
+	store.failAt = 5
+	store.failure = failure
+	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+	coordinator := openCoordinator(t, topology, store, "terminal-retry", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+	completePhase(t, enterPhase(t, coordinator, "phase"), nil)
+	if err := exitPhase(t, coordinator, "phase").Complete(context.Background(), nil); !errors.Is(err, failure) {
+		t.Fatalf("terminalization error = %v, want %v", err, failure)
+	}
+	execution, err := coordinator.ExitPhase(context.Background(), "phase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.ShouldRun() {
+		t.Fatal("completed exit was admitted while retrying terminalization")
+	}
+	if status := coordinator.Snapshot().Status; status != lifecycle.RunSucceeded {
+		t.Fatalf("run status = %q, want %q", status, lifecycle.RunSucceeded)
+	}
+}
+
 func coordinatorTopology(t *testing.T, phases ...lifecycle.PhaseSpec) *lifecycle.Topology {
 	t.Helper()
 	topology, err := lifecycle.NewTopology(phases)
