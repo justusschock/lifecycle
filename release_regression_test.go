@@ -540,6 +540,27 @@ func TestEngineAcceptsFailureWhoseErrorTextIsEmpty(t *testing.T) {
 	}
 }
 
+func TestEngineRecoversEmptyPersistedErrorTextExactly(t *testing.T) {
+	noop := func(context.Context) error { return nil }
+	plan := singlePhasePlan(t, "phase", noop, noop, noop)
+	store := memory.NewStore()
+	saveSnapshot(t, store, lifecycle.Snapshot{
+		RunID: "empty-recovered-error", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack,
+		Phases: map[string]lifecycle.PhaseState{"phase": {Status: lifecycle.PhaseEnterFailed}},
+	})
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.Run(context.Background(), "empty-recovered-error")
+	if err == nil || err.Error() != "" {
+		t.Fatalf("Run error = %q, want a non-nil error with preserved empty text", err)
+	}
+	if snapshot.Status != lifecycle.RunRolledBack {
+		t.Fatalf("status = %q, want %q", snapshot.Status, lifecycle.RunRolledBack)
+	}
+}
+
 func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
