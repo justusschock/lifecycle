@@ -53,12 +53,6 @@ func (r *runner) current() Snapshot {
 	return cloneSnapshot(r.snapshot)
 }
 
-func (r *runner) phaseStatus(name string) PhaseStatus {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.snapshot.Phases[name].Status
-}
-
 func (r *runner) setRunStatus(ctx context.Context, status RunStatus) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

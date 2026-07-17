@@ -27,9 +27,6 @@ func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
 		if !knownPhaseStatus(state.Status) {
 			return invalidSnapshot("phase %q has unknown status %q", name, state.Status)
 		}
-		if isFailureStatus(state.Status) && state.LastError == "" {
-			return invalidSnapshot("phase %q has status %q without an error", name, state.Status)
-		}
 	}
 	if !knownRunStatus(snapshot.Status) {
 		return invalidSnapshot("run has unknown status %q", snapshot.Status)
@@ -58,10 +55,6 @@ func knownRunStatus(status RunStatus) bool {
 	default:
 		return false
 	}
-}
-
-func isFailureStatus(status PhaseStatus) bool {
-	return status == PhaseEnterFailed || status == PhaseExitFailed || status == PhaseRollbackFailed
 }
 
 func consistentRunState(snapshot Snapshot) bool {

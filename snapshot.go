@@ -20,6 +20,7 @@ const (
 	PhaseRollbackFailed PhaseStatus = "rollback_failed"
 
 	// PhaseFailed is retained as an alias for entry failures.
+	// Deprecated: use PhaseEnterFailed.
 	PhaseFailed = PhaseEnterFailed
 )
 
