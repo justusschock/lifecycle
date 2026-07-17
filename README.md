@@ -100,16 +100,26 @@ fmt.Println(snapshot.Status) // succeeded
 
 `Run` performs a complete lifecycle:
 
-1. Enter levels from roots toward joins.
-2. Run siblings in a level concurrently, bounded by `MaxParallel`.
-3. After successful entry, exit levels in reverse topological order.
-4. If entry fails, cancel its level and roll back successfully entered phases
-   in reverse topological order.
+1. Admit lexically sorted phases whose dependencies have durably entered.
+2. Start a dependent as soon as its own dependencies finish, without waiting
+   for unrelated phases in the same topological level.
+3. After successful entry, exit phases when all of their dependents have
+   durably resolved.
+4. If entry fails, atomically move the run to `rolling_back`, stop admitting
+   new entry work, and roll back successfully entered phases using the same
+   reverse-dependency readiness rule.
 
-Within a level, errors are deterministic by the plan's lexical phase order.
-Rollback is best effort: an ordinary rollback error does not prevent other
-entered phases from receiving rollback, and all entry and rollback errors are
-joined. An exit error ends the run as failed; it does not synthesize a rollback.
+At most `MaxParallel` callbacks run concurrently. Admission is lexical among
+the phases ready at each scheduling decision; error joins use stable
+topological-level and lexical order rather than callback completion order.
+`Plan.Levels` remains useful for graph introspection but is not an execution
+barrier.
+
+Exit and rollback are durable best-effort traversals. A failed cleanup action
+is recorded with stage-specific provenance and counts as resolved for admitting
+its ancestors, so it does not suppress cleanup of a sibling or dependency. The
+run becomes `failed` only after every eligible cleanup action is durably
+resolved. An exit failure does not synthesize a rollback.
 
 `MaxParallel` defaults to `1` when zero. Negative values are rejected. `Clock`
 defaults to `time.Now` and can be replaced for deterministic timestamps.
@@ -120,8 +130,8 @@ nil interface.
 
 The engine saves a snapshot before and after every action. The pre-action save
 sets the in-progress status and increments `Attempts`; the post-action save
-records completion or failure. Store calls are serialized even while phase
-callbacks in one level run concurrently.
+records completion or a stage-specific failure. Store calls are serialized
+even while independent phase callbacks run concurrently.
 
 Actions must be idempotent. A process can crash after an action's side effects
 but before its completed status is durable, so an in-progress action is retried
@@ -132,11 +142,18 @@ once the run resumes. Completed actions are not repeated.
 | `pending` | Run `Enter` when its level is reached. |
 | `entering` | Retry `Enter`. |
 | `entered` | Skip `Enter`; later run `Exit`, or `Rollback` after entry failure. |
+| `enter_failed` | Preserve the entry failure while outstanding rollback completes. |
 | `exiting` | Retry `Exit`. |
 | `exited` | Skip `Enter` and `Exit`. |
+| `exit_failed` | Preserve the exit failure and continue cleanup toward dependencies. |
 | `rolling_back` | Retry `Rollback`. |
 | `rolled_back` | Skip `Rollback`. |
-| `failed` | Preserve the completed action failure; the accompanying run status determines terminal or rollback recovery. |
+| `rollback_failed` | Preserve the rollback failure and continue cleanup toward dependencies. |
+
+When a recovered run is already `rolling_back`, every durable `entering` phase
+is retried before rollback scheduling begins. Phases that durably become
+`entered` are then rolled back. Entry errors already recorded in the snapshot
+are returned again in deterministic order.
 
 The in-memory runner commits a transition only after `Store.Save` succeeds. If
 persistence fails before an action, that action is not called. If persistence
@@ -144,29 +161,53 @@ fails after an action, the durable phase remains in progress and is therefore
 restartable. The engine returns the persistence error and the last successfully
 saved snapshot without incorrectly advancing the run to a terminal state.
 
-Snapshots are tied to `Plan.Digest`. A mismatch returns `ErrPlanChanged` before
-any action runs. Calling `Run` for a run already in `succeeded`, `rolled_back`,
-or `failed` state returns `ErrRunTerminal`.
+Loaded snapshots are validated before any action runs: the requested run ID,
+plan digest, exact planned phase set, phase and run statuses, and terminal-state
+consistency must all agree. A plan mismatch returns both `ErrInvalidSnapshot`
+and `ErrPlanChanged` through `errors.Is`. A `succeeded` snapshot is valid only
+when every phase is `exited`. Calling `Run` for a valid run already in
+`succeeded`, `rolled_back`, or `failed` state returns `ErrRunTerminal`.
 
 ### Store contract
 
-Implementations provide two operations:
+Implementations acquire a fenced, run-bound session:
 
 ```go
 type Store interface {
-	Load(context.Context, string) (lifecycle.Snapshot, error)
+	Acquire(context.Context, string) (lifecycle.Session, error)
+}
+
+type Session interface {
+	RunID() string
+	Load(context.Context) (lifecycle.Snapshot, error)
 	Save(context.Context, lifecycle.Snapshot) error
+	Release(context.Context) error
 }
 ```
 
-`Load` must return `ErrSnapshotNotFound` for an absent run. A production store
-should atomically replace the complete snapshot and durably acknowledge `Save`
-only after the replacement is recoverable. Implementations should not retain or
-mutate caller-owned phase maps.
+`Acquire` must establish one exclusive owner for that run across every process
+using the backend. It returns `ErrRunOwned` while another owner is active. Each
+session carries a monotonically fenced ownership generation: after release or
+supersession, its operations—especially `Save`—must fail with
+`ErrOwnershipLost`. A session may load and save only its reported `RunID`; a
+cross-run snapshot is invalid.
+
+`Session.Load` must return `ErrSnapshotNotFound` for an absent run. `Save` must
+atomically replace the complete snapshot and durably acknowledge only after the
+replacement is recoverable. Implementations must not retain or mutate
+caller-owned phase maps. The engine always releases with a context independent
+of cancellation of `Run`, so canceling an action does not strand ownership.
+
+Two concurrent calls for the same run do not serialize inside `Engine`: one
+owns the backend session and the other receives `ErrRunOwned`. This contract is
+part of `Store`; process-local engine mutexes are not sufficient for a durable
+or distributed implementation.
 
 `memory.NewStore` is a mutex-protected reference implementation. It clones phase
-maps on every boundary and is useful for tests and process-local workflows, but
-it is not durable across process restarts.
+maps on every boundary, fences stale sessions, and is useful for tests and
+process-local workflows. It is not durable and cannot coordinate separate
+processes. Production backends must implement the same session contract with a
+portable lease or transaction and durable fencing token.
 
 ## Status and diagnostics
 
@@ -188,13 +229,19 @@ Stable sentinel errors are exported from the root package:
 | `ErrUnknownDependency` | A dependency name is absent from the plan. |
 | `ErrCycle` | The graph contains a cycle or self-dependency. |
 | `ErrSnapshotNotFound` | A store has no snapshot for the requested run. |
-| `ErrPlanChanged` | A snapshot's digest differs from the supplied plan. |
+| `ErrInvalidSnapshot` | A loaded snapshot or run-bound save violates the lifecycle state contract. |
+| `ErrPlanChanged` | A snapshot's digest differs from the supplied plan; also matches `ErrInvalidSnapshot`. |
 | `ErrRunTerminal` | The requested run has already reached a terminal state. |
+| `ErrRunOwned` | Another session exclusively owns the requested run. |
+| `ErrOwnershipLost` | A released or superseded session attempted an operation. |
 | `ErrInvalidArtifact` | A handoff artifact, receipt, or protocol collaborator is structurally invalid. |
 | `ErrIntegrity` | Artifact data, digest, ID, or receipt identity does not agree. |
 
 Use `errors.Is`, because action, rollback, handoff-stage, and persistence errors
-may be wrapped or joined.
+may be wrapped or joined. A live action error preserves its Go error identity.
+After a restart, only the persisted `LastError` string is available, so the
+reconstructed error preserves text and deterministic ordering but cannot
+preserve the original value's `errors.Is` identity.
 
 ## Generic handoff
 
@@ -220,12 +267,14 @@ validates the artifact after export and receive, validates receipt fields, and
 requires the exported artifact, receipt, and received artifact IDs to match.
 Adoption is never called after an integrity failure.
 
-Artifacts use `SHA-256(Data)` as both their digest and hex-encoded ID. Media
-type, version, and metadata are validated or transported but are not part of
-the content digest. `NewArtifact`, `Clone`, and the protocol copy byte slices and
-metadata maps at every boundary so collaborators do not share mutable backing
-storage. Since artifact fields are exported, callers that modify an artifact
-must call `Validate` before trusting or forwarding it.
+Artifacts use a canonical SHA-256 semantic-envelope digest as both their digest
+and hex-encoded ID. The canonical input length-prefixes media type, version,
+data, metadata count, and metadata keys and values sorted by key. Changing any
+of those fields therefore changes identity, while Go map iteration order does
+not. `NewArtifact`, `Clone`, and the protocol copy byte slices and metadata maps
+at every boundary so collaborators do not share mutable backing storage. Since
+artifact fields are exported, callers that modify an artifact must call
+`Validate` before trusting or forwarding it.
 
 ```go
 artifact, err := handoff.NewArtifact(
@@ -256,7 +305,8 @@ finite resource right is deliberately excluded and belongs in
 This release intentionally does not provide:
 
 - a workflow DSL, timers, schedules, or long-running orchestration;
-- distributed locking or a distributed snapshot-store implementation;
+- a durable or distributed `Store` implementation (the interface nevertheless
+  requires exclusive fenced sessions from one);
 - retries beyond restart recovery of interrupted idempotent actions;
 - synthesized compensation or inferred rollback actions;
 - domain-specific lifecycle states or resource ownership semantics;
