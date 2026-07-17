@@ -726,9 +726,30 @@ type recordingStore struct {
 	failure  error
 }
 
+type recordingSession struct {
+	store *recordingStore
+	runID string
+}
+
 func newRecordingStore() *recordingStore {
 	return &recordingStore{}
 }
+
+func (s *recordingStore) Acquire(_ context.Context, runID string) (lifecycle.Session, error) {
+	return &recordingSession{store: s, runID: runID}, nil
+}
+
+func (s *recordingSession) RunID() string { return s.runID }
+
+func (s *recordingSession) Load(ctx context.Context) (lifecycle.Snapshot, error) {
+	return s.store.Load(ctx, s.runID)
+}
+
+func (s *recordingSession) Save(ctx context.Context, snapshot lifecycle.Snapshot) error {
+	return s.store.Save(ctx, snapshot)
+}
+
+func (s *recordingSession) Release(context.Context) error { return nil }
 
 func (s *recordingStore) Load(context.Context, string) (lifecycle.Snapshot, error) {
 	s.mu.Lock()
@@ -796,7 +817,14 @@ func singlePhasePlan(t *testing.T, name string, enter, exit, rollback lifecycle.
 
 func saveSnapshot(t *testing.T, store lifecycle.Store, snapshot lifecycle.Snapshot) {
 	t.Helper()
-	if err := store.Save(context.Background(), snapshot); err != nil {
+	session, err := store.Acquire(context.Background(), snapshot.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Save(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Release(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

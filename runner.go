@@ -8,7 +8,7 @@ import (
 )
 
 type runner struct {
-	store    Store
+	store    Session
 	clock    func() time.Time
 	snapshot Snapshot
 	mu       sync.Mutex
@@ -38,7 +38,7 @@ func wrapPersistenceError(err error) error {
 	return &persistenceError{err: err}
 }
 
-func newRunner(store Store, clock func() time.Time, snapshot Snapshot) *runner {
+func newRunner(store Session, clock func() time.Time, snapshot Snapshot) *runner {
 	return &runner{store: store, clock: clock, snapshot: cloneSnapshot(snapshot)}
 }
 

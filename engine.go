@@ -35,12 +35,24 @@ func NewEngine(plan *Plan, store Store, options Options) (*Engine, error) {
 	return &Engine{plan: plan, store: store, options: options}, nil
 }
 
-func (e *Engine) Run(ctx context.Context, runID string) (Snapshot, error) {
+func (e *Engine) Run(ctx context.Context, runID string) (result Snapshot, resultErr error) {
 	if runID == "" {
 		return Snapshot{}, fmt.Errorf("%w: empty run ID", ErrInvalidPhase)
 	}
 
-	snapshot, err := e.store.Load(ctx, runID)
+	session, err := e.store.Acquire(ctx, runID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if isNilSession(session) {
+		return Snapshot{}, fmt.Errorf("%w: store returned a nil session", ErrInvalidSnapshot)
+	}
+	defer func() {
+		releaseErr := session.Release(context.WithoutCancel(ctx))
+		resultErr = errors.Join(resultErr, releaseErr)
+	}()
+
+	snapshot, err := session.Load(ctx)
 	if err != nil {
 		if !errors.Is(err, ErrSnapshotNotFound) {
 			return Snapshot{}, err
@@ -56,7 +68,7 @@ func (e *Engine) Run(ctx context.Context, runID string) (Snapshot, error) {
 		e.ensurePhases(&snapshot)
 	}
 
-	run := newRunner(e.store, e.options.Clock, snapshot)
+	run := newRunner(session, e.options.Clock, snapshot)
 	if snapshot.Status == RunRollingBack {
 		rollbackErr := e.rollback(ctx, run)
 		if isPersistenceError(rollbackErr) {
@@ -250,6 +262,19 @@ func isNilStore(store Store) bool {
 		return true
 	}
 	value := reflect.ValueOf(store)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func isNilSession(session Session) bool {
+	if session == nil {
+		return true
+	}
+	value := reflect.ValueOf(session)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()

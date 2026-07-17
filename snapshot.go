@@ -45,8 +45,14 @@ type Snapshot struct {
 }
 
 type Store interface {
-	Load(context.Context, string) (Snapshot, error)
+	Acquire(context.Context, string) (Session, error)
+}
+
+type Session interface {
+	RunID() string
+	Load(context.Context) (Snapshot, error)
 	Save(context.Context, Snapshot) error
+	Release(context.Context) error
 }
 
 type Options struct {
