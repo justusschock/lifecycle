@@ -113,6 +113,8 @@ joined. An exit error ends the run as failed; it does not synthesize a rollback.
 
 `MaxParallel` defaults to `1` when zero. Negative values are rejected. `Clock`
 defaults to `time.Now` and can be replaced for deterministic timestamps.
+`NewEngine` rejects a nil plan and nil stores, including stores held in a typed
+nil interface.
 
 ## Persistence and recovery
 
