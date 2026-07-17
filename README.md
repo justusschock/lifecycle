@@ -192,6 +192,12 @@ supersession, its operations—especially `Save`—must fail with
 `ErrOwnershipLost`. A session may load and save only its reported `RunID`; a
 cross-run snapshot is invalid.
 
+The session fence protects ownership and persistence of lifecycle snapshots.
+It does not fence arbitrary external side effects from a callback after an
+external lease is superseded. Callbacks that mutate another system must also
+propagate and validate that system's fencing token, or enforce equivalent
+domain-level ownership.
+
 `Session.Load` must return `ErrSnapshotNotFound` for an absent run. `Save` must
 atomically replace the complete snapshot and durably acknowledge only after the
 replacement is recoverable. Implementations must not retain or mutate
