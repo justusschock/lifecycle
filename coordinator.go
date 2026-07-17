@@ -14,13 +14,16 @@ type Coordinator struct {
 	session  Session
 	options  Options
 
-	mu         sync.Mutex
-	snapshot   Snapshot
-	changed    chan struct{}
-	active     map[string]*Execution
-	liveErrors map[string]error
-	fatalErr   error
-	closed     bool
+	mu                 sync.Mutex
+	snapshot           Snapshot
+	changed            chan struct{}
+	active             map[string]*Execution
+	liveErrors         map[string]error
+	fatalErr           error
+	admissionFailure   bool
+	completionFailures map[*Execution]error
+	closed             bool
+	released           bool
 }
 
 // OpenCoordinator acquires exclusive ownership of runID and restores its
@@ -70,13 +73,14 @@ func OpenCoordinator(ctx context.Context, topology *Topology, store Store, runID
 	}
 
 	return &Coordinator{
-		topology:   topology,
-		session:    session,
-		options:    options,
-		snapshot:   snapshot,
-		changed:    make(chan struct{}),
-		active:     make(map[string]*Execution),
-		liveErrors: make(map[string]error),
+		topology:           topology,
+		session:            session,
+		options:            options,
+		snapshot:           snapshot,
+		changed:            make(chan struct{}),
+		active:             make(map[string]*Execution),
+		liveErrors:         make(map[string]error),
+		completionFailures: make(map[*Execution]error),
 	}, nil
 }
 
@@ -88,6 +92,9 @@ func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, 
 	}
 
 	for {
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
+		}
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
@@ -138,7 +145,9 @@ func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, 
 			}
 			candidate.UpdatedAt = phaseState.UpdatedAt
 			if err := c.session.Save(ctx, cloneSnapshot(candidate)); err != nil {
-				c.failLocked(err)
+				if cause := context.Cause(ctx); cause == nil || !errors.Is(err, cause) {
+					c.failAdmissionLocked(err)
+				}
 				c.mu.Unlock()
 				return nil, err
 			}
@@ -177,17 +186,22 @@ func (c *Coordinator) Snapshot() Snapshot {
 // Close cancels active executions and releases fenced ownership.
 func (c *Coordinator) Close(ctx context.Context) error {
 	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
+	defer c.mu.Unlock()
+	if c.released {
 		return nil
 	}
-	c.closed = true
-	for _, execution := range c.active {
-		execution.cancel(ErrOwnershipLost)
+	if !c.closed {
+		c.closed = true
+		for _, execution := range c.active {
+			execution.cancel(ErrOwnershipLost)
+		}
+		c.signalLocked()
 	}
-	c.signalLocked()
-	c.mu.Unlock()
-	return c.session.Release(ctx)
+	if err := c.session.Release(ctx); err != nil {
+		return err
+	}
+	c.released = true
+	return nil
 }
 
 func (c *Coordinator) completeEntry(ctx context.Context, execution *Execution, actionErr error) (error, bool) {
@@ -213,12 +227,15 @@ func (c *Coordinator) completeEntry(ctx context.Context, execution *Execution, a
 	candidate.Phases[execution.name] = state
 	candidate.UpdatedAt = state.UpdatedAt
 	if err := c.session.Save(ctx, cloneSnapshot(candidate)); err != nil {
-		c.failLocked(err)
+		if cause := context.Cause(ctx); cause == nil || !errors.Is(err, cause) {
+			c.failCompletionLocked(execution, err)
+		}
 		return errors.Join(actionErr, err), false
 	}
 
 	c.snapshot = candidate
 	delete(c.active, execution.name)
+	c.clearCompletionFailureLocked(execution)
 	execution.cancel(nil)
 	if actionErr != nil {
 		c.liveErrors[execution.name] = actionErr
@@ -281,8 +298,31 @@ func (c *Coordinator) entryFailureLocked() error {
 	return ErrRunTerminal
 }
 
-func (c *Coordinator) failLocked(err error) {
+func (c *Coordinator) failAdmissionLocked(err error) {
+	c.admissionFailure = true
 	c.fatalErr = err
+	c.cancelActiveLocked(err)
+}
+
+func (c *Coordinator) failCompletionLocked(execution *Execution, err error) {
+	c.completionFailures[execution] = err
+	c.fatalErr = err
+	c.cancelActiveLocked(err)
+}
+
+func (c *Coordinator) clearCompletionFailureLocked(execution *Execution) {
+	delete(c.completionFailures, execution)
+	if c.admissionFailure {
+		return
+	}
+	c.fatalErr = nil
+	for _, err := range c.completionFailures {
+		c.fatalErr = err
+		break
+	}
+}
+
+func (c *Coordinator) cancelActiveLocked(err error) {
 	for _, execution := range c.active {
 		execution.cancel(err)
 	}
