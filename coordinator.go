@@ -30,6 +30,7 @@ type Coordinator struct {
 	active             map[string]*Execution
 	liveErrors         map[string]error
 	fatalErr           error
+	terminalErr        error
 	admissionFailure   bool
 	completionFailures map[*Execution]error
 	closed             bool
@@ -375,12 +376,11 @@ func (c *Coordinator) terminalizeLocked(ctx context.Context, stage executionStag
 	candidate.Status = status
 	candidate.UpdatedAt = c.options.Clock()
 	if err := c.session.Save(ctx, cloneSnapshot(candidate)); err != nil {
-		if cause := context.Cause(ctx); cause == nil || !errors.Is(err, cause) {
-			c.failAdmissionLocked(err)
-		}
+		c.terminalErr = err
 		return false, err
 	}
 	c.snapshot = candidate
+	c.terminalErr = nil
 	c.signalLocked()
 	return true, nil
 }
@@ -407,7 +407,7 @@ func (c *Coordinator) waitForChange(ctx context.Context) error {
 func (c *Coordinator) persistenceError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.fatalErr
+	return errors.Join(c.fatalErr, c.terminalErr)
 }
 
 func terminalStatus(snapshot Snapshot, stage executionStage) (RunStatus, bool) {
