@@ -453,7 +453,7 @@ func TestEngineLeavesInterruptedActionsRestartableAfterTerminalSaveFailure(t *te
 		entryFailure := errors.New("entry failed")
 		saveFailure := errors.New("rolled-back status save failed")
 		store := newRecordingStore()
-		store.failAt = 7
+		store.failAt = 6
 		store.failure = saveFailure
 		var rollbackCalls atomic.Int32
 		noop := func(context.Context) error { return nil }
@@ -475,8 +475,8 @@ func TestEngineLeavesInterruptedActionsRestartableAfterTerminalSaveFailure(t *te
 		if snapshot.Status != lifecycle.RunRollingBack || snapshot.Phases["root"].Status != lifecycle.PhaseRollingBack {
 			t.Fatalf("first snapshot = run:%q root:%q, want rolling_back/rolling_back", snapshot.Status, snapshot.Phases["root"].Status)
 		}
-		if _, err := engine.Run(context.Background(), "interrupted-rollback"); err != nil {
-			t.Fatal(err)
+		if _, err := engine.Run(context.Background(), "interrupted-rollback"); err == nil || err.Error() != entryFailure.Error() {
+			t.Fatalf("second Run error = %v, want recovered entry failure", err)
 		}
 		if rollbackCalls.Load() != 2 {
 			t.Fatalf("rollback calls after restart = %d, want 2", rollbackCalls.Load())
@@ -508,7 +508,7 @@ func TestEngineDoesNotExposeFailedRunStatusSaveAsCurrent(t *testing.T) {
 	}
 }
 
-func TestEnginePersistsFailedRunStatusWithFailedExitAction(t *testing.T) {
+func TestEngineLeavesExitFailureNonterminalUntilFinalStatusIsDurable(t *testing.T) {
 	actionFailure := errors.New("exit failed")
 	statusSaveFailure := errors.New("status save failed")
 	store := newRecordingStore()
@@ -530,16 +530,20 @@ func TestEnginePersistsFailedRunStatusWithFailedExitAction(t *testing.T) {
 	if _, err := engine.Run(context.Background(), "failed-exit"); !errors.Is(err, actionFailure) || !errors.Is(err, statusSaveFailure) {
 		t.Fatalf("first Run error = %v, want action and status-save failures", err)
 	}
-	if got := store.latest().Status; got != lifecycle.RunFailed {
-		t.Fatalf("durable run status = %q, want %q", got, lifecycle.RunFailed)
+	if got := store.latest().Status; got != lifecycle.RunRunning {
+		t.Fatalf("durable run status = %q, want cleanup status %q", got, lifecycle.RunRunning)
 	}
 
 	restarted, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restarted.Run(context.Background(), "failed-exit"); !errors.Is(err, lifecycle.ErrRunTerminal) {
-		t.Fatalf("restart error = %v, want %v", err, lifecycle.ErrRunTerminal)
+	snapshot, err := restarted.Run(context.Background(), "failed-exit")
+	if err == nil || err.Error() != actionFailure.Error() {
+		t.Fatalf("restart error = %v, want recovered action failure", err)
+	}
+	if snapshot.Status != lifecycle.RunFailed {
+		t.Fatalf("restart status = %q, want %q", snapshot.Status, lifecycle.RunFailed)
 	}
 	if enterCalls.Load() != 1 || exitCalls.Load() != 1 {
 		t.Fatalf("calls after restart = enter:%d exit:%d, want 1 each", enterCalls.Load(), exitCalls.Load())
@@ -679,7 +683,7 @@ func TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder(t *testing.T) {
 	phases["b"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, LastError: "b failed"}
 	phases["a"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, LastError: "a failed"}
 	phases["root"] = lifecycle.PhaseState{Status: lifecycle.PhaseEntered}
-	saveSnapshot(t, store, lifecycle.Snapshot{RunID: "recovered-failures", PlanDigest: plan.Digest(), Status: lifecycle.RunRunning, Phases: phases})
+	saveSnapshot(t, store, lifecycle.Snapshot{RunID: "recovered-failures", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack, Phases: phases})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 	if err != nil {
 		t.Fatal(err)
