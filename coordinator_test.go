@@ -423,6 +423,20 @@ func TestCoordinatorRejectsStageOperationsInInvalidRunState(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRejectsExitUntilAllEntriesResolve(t *testing.T) {
+	topology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "entered"},
+		lifecycle.PhaseSpec{Name: "pending"},
+	)
+	coordinator := openCoordinator(t, topology, memory.NewStore(), "exit-eligibility", lifecycle.Options{})
+	defer closeCoordinator(t, coordinator)
+	completePhase(t, enterPhase(t, coordinator, "entered"), nil)
+
+	if _, err := coordinator.ExitPhase(context.Background(), "entered"); err == nil {
+		t.Fatal("exit was admitted while an unrelated entry remained pending")
+	}
+}
+
 func coordinatorTopology(t *testing.T, phases ...lifecycle.PhaseSpec) *lifecycle.Topology {
 	t.Helper()
 	topology, err := lifecycle.NewTopology(phases)
