@@ -6,6 +6,7 @@ var (
 	ErrInvalidPhase      = errors.New("lifecycle: invalid phase")
 	ErrDuplicatePhase    = errors.New("lifecycle: duplicate phase")
 	ErrUnknownDependency = errors.New("lifecycle: unknown dependency")
+	ErrDependencyFailed  = errors.New("lifecycle: dependency failed")
 	ErrCycle             = errors.New("lifecycle: cycle")
 	ErrSnapshotNotFound  = errors.New("lifecycle: snapshot not found")
 	ErrInvalidSnapshot   = errors.New("lifecycle: invalid snapshot")

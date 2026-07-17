@@ -6,22 +6,26 @@ import (
 )
 
 func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
+	return validateTopologySnapshot(plan.topology, runID, snapshot)
+}
+
+func validateTopologySnapshot(topology *Topology, runID string, snapshot Snapshot) error {
 	if snapshot.RunID != runID {
 		return invalidSnapshot("run ID is %q, want %q", snapshot.RunID, runID)
 	}
-	if snapshot.PlanDigest != plan.Digest() {
+	if snapshot.PlanDigest != topology.Digest() {
 		return errors.Join(invalidSnapshot("plan digest does not match"), ErrPlanChanged)
 	}
-	if len(snapshot.Phases) != len(plan.phases) {
-		return invalidSnapshot("phase count is %d, want %d", len(snapshot.Phases), len(plan.phases))
+	if len(snapshot.Phases) != len(topology.phases) {
+		return invalidSnapshot("phase count is %d, want %d", len(snapshot.Phases), len(topology.phases))
 	}
-	for name := range plan.phases {
+	for name := range topology.phases {
 		if _, exists := snapshot.Phases[name]; !exists {
 			return invalidSnapshot("phase %q is missing", name)
 		}
 	}
 	for name, state := range snapshot.Phases {
-		if _, exists := plan.phases[name]; !exists {
+		if _, exists := topology.phases[name]; !exists {
 			return invalidSnapshot("phase %q is not in the plan", name)
 		}
 		if !knownPhaseStatus(state.Status) {
@@ -43,7 +47,7 @@ func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
 	if snapshot.Status == RunRollingBack && hasStatus(snapshot, PhaseEntering) && hasAnyStatus(snapshot, PhaseRollingBack, PhaseRolledBack, PhaseRollbackFailed) {
 		return invalidSnapshot("rollback cleanup started while entry remains in progress")
 	}
-	if err := validateDependencyOrdering(plan, snapshot); err != nil {
+	if err := validateTopologyDependencyOrdering(topology, snapshot); err != nil {
 		return err
 	}
 	return nil
@@ -96,10 +100,14 @@ func validatePhaseState(name string, state PhaseState) error {
 }
 
 func validateDependencyOrdering(plan *Plan, snapshot Snapshot) error {
-	for _, level := range plan.levels {
+	return validateTopologyDependencyOrdering(plan.topology, snapshot)
+}
+
+func validateTopologyDependencyOrdering(topology *Topology, snapshot Snapshot) error {
+	for _, level := range topology.levels {
 		for _, name := range level {
 			state := snapshot.Phases[name]
-			for _, dependency := range plan.phases[name].DependsOn {
+			for _, dependency := range topology.phases[name].DependsOn {
 				dependencyState := snapshot.Phases[dependency]
 				if state.Status != PhasePending && !hasSuccessfulEntryEvidence(dependencyState.Status) {
 					return invalidSnapshot("dependency ordering: phase %q is %q before dependency %q has successful entry evidence", name, state.Status, dependency)
