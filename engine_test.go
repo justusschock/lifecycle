@@ -652,7 +652,7 @@ func TestEngineRejectsChangedPlanAndTerminalRunBeforeActions(t *testing.T) {
 
 	t.Run("terminal run", func(t *testing.T) {
 		store := memory.NewStore()
-		saveSnapshot(t, store, lifecycle.Snapshot{RunID: "terminal", PlanDigest: plan.Digest(), Status: lifecycle.RunSucceeded, Phases: map[string]lifecycle.PhaseState{"phase": {Status: lifecycle.PhaseExited}}})
+		saveSnapshot(t, store, lifecycle.Snapshot{RunID: "terminal", PlanDigest: plan.Digest(), Status: lifecycle.RunSucceeded, Phases: map[string]lifecycle.PhaseState{"phase": {Status: lifecycle.PhaseExited, Attempts: 2}}})
 		engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 		if err != nil {
 			t.Fatal(err)
@@ -680,9 +680,9 @@ func TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder(t *testing.T) {
 	}
 	store := memory.NewStore()
 	phases := make(map[string]lifecycle.PhaseState)
-	phases["b"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, LastError: "b failed"}
-	phases["a"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, LastError: "a failed"}
-	phases["root"] = lifecycle.PhaseState{Status: lifecycle.PhaseEntered}
+	phases["b"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, Attempts: 1, LastError: "b failed"}
+	phases["a"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, Attempts: 1, LastError: "a failed"}
+	phases["root"] = lifecycle.PhaseState{Status: lifecycle.PhaseEntered, Attempts: 1}
 	saveSnapshot(t, store, lifecycle.Snapshot{RunID: "recovered-failures", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack, Phases: phases})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 	if err != nil {

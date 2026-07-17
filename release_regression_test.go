@@ -406,8 +406,8 @@ func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *tes
 	saveSnapshot(t, store, lifecycle.Snapshot{
 		RunID: "rollback-restart", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack,
 		Phases: map[string]lifecycle.PhaseState{
-			"root":  {Status: lifecycle.PhaseEntered},
-			"child": {Status: lifecycle.PhaseRollbackFailed, LastError: "child rollback failed"},
+			"root":  {Status: lifecycle.PhaseEntered, Attempts: 1},
+			"child": {Status: lifecycle.PhaseRollbackFailed, Attempts: 2, LastError: "child rollback failed"},
 		},
 	})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
@@ -442,9 +442,9 @@ func TestRecoveredExitPreservesFailureAndFinishesOutstandingCleanup(t *testing.T
 	saveSnapshot(t, store, lifecycle.Snapshot{
 		RunID: "exit-restart", PlanDigest: plan.Digest(), Status: lifecycle.RunRunning,
 		Phases: map[string]lifecycle.PhaseState{
-			"root": {Status: lifecycle.PhaseEntered},
-			"a":    {Status: lifecycle.PhaseExitFailed, LastError: "a exit failed"},
-			"b":    {Status: lifecycle.PhaseExiting},
+			"root": {Status: lifecycle.PhaseEntered, Attempts: 1},
+			"a":    {Status: lifecycle.PhaseExitFailed, Attempts: 2, LastError: "a exit failed"},
+			"b":    {Status: lifecycle.PhaseExiting, Attempts: 2},
 		},
 	})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
@@ -485,19 +485,19 @@ func TestEngineValidatesLoadedSnapshots(t *testing.T) {
 		{name: "unknown run status", mutate: func(snapshot *lifecycle.Snapshot) { snapshot.Status = "mystery" }},
 		{name: "successful run with unexited phase", mutate: func(snapshot *lifecycle.Snapshot) { snapshot.Status = lifecycle.RunSucceeded }},
 		{name: "entry failure without rollback status", mutate: func(snapshot *lifecycle.Snapshot) {
-			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseEnterFailed, LastError: "failed"}
+			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseEnterFailed, Attempts: 1, LastError: "failed"}
 		}},
 		{name: "exit failure marked succeeded", mutate: func(snapshot *lifecycle.Snapshot) {
 			snapshot.Status = lifecycle.RunSucceeded
-			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseExitFailed, LastError: "failed"}
+			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseExitFailed, Attempts: 2, LastError: "failed"}
 		}},
 		{name: "unresolved terminal rollback", mutate: func(snapshot *lifecycle.Snapshot) {
 			snapshot.Status = lifecycle.RunRolledBack
-			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseRollingBack}
+			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseRollingBack, Attempts: 2}
 		}},
 		{name: "failed run with outstanding exit", mutate: func(snapshot *lifecycle.Snapshot) {
 			snapshot.Status = lifecycle.RunFailed
-			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseExiting}
+			snapshot.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseExiting, Attempts: 2}
 		}},
 	}
 	for _, test := range tests {
@@ -546,7 +546,7 @@ func TestEngineRecoversEmptyPersistedErrorTextExactly(t *testing.T) {
 	store := memory.NewStore()
 	saveSnapshot(t, store, lifecycle.Snapshot{
 		RunID: "empty-recovered-error", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack,
-		Phases: map[string]lifecycle.PhaseState{"phase": {Status: lifecycle.PhaseEnterFailed}},
+		Phases: map[string]lifecycle.PhaseState{"phase": {Status: lifecycle.PhaseEnterFailed, Attempts: 1}},
 	})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 	if err != nil {
@@ -568,32 +568,33 @@ func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 		name     string
 		run      lifecycle.RunStatus
 		phase    lifecycle.PhaseStatus
+		attempts uint
 		lastErr  string
 		terminal bool
 	}{
 		{name: "pending", run: lifecycle.RunPending, phase: lifecycle.PhasePending},
-		{name: "entering", run: lifecycle.RunRunning, phase: lifecycle.PhaseEntering},
-		{name: "entered", run: lifecycle.RunRunning, phase: lifecycle.PhaseEntered},
-		{name: "exiting", run: lifecycle.RunRunning, phase: lifecycle.PhaseExiting},
-		{name: "exited before final save", run: lifecycle.RunRunning, phase: lifecycle.PhaseExited},
-		{name: "exit failed before final save", run: lifecycle.RunRunning, phase: lifecycle.PhaseExitFailed, lastErr: "exit failed"},
-		{name: "entering during rollback", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEntering},
-		{name: "entered during rollback", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEntered},
-		{name: "enter failed", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEnterFailed, lastErr: "enter failed"},
-		{name: "rolling back", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRollingBack},
-		{name: "rolled back before final save", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRolledBack},
-		{name: "rollback failed before final save", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRollbackFailed, lastErr: "rollback failed"},
-		{name: "succeeded", run: lifecycle.RunSucceeded, phase: lifecycle.PhaseExited, terminal: true},
-		{name: "rolled back", run: lifecycle.RunRolledBack, phase: lifecycle.PhaseEnterFailed, lastErr: "enter failed", terminal: true},
-		{name: "exit path failed", run: lifecycle.RunFailed, phase: lifecycle.PhaseExitFailed, lastErr: "exit failed", terminal: true},
-		{name: "rollback path failed", run: lifecycle.RunFailed, phase: lifecycle.PhaseRollbackFailed, lastErr: "rollback failed", terminal: true},
+		{name: "entering", run: lifecycle.RunRunning, phase: lifecycle.PhaseEntering, attempts: 1},
+		{name: "entered", run: lifecycle.RunRunning, phase: lifecycle.PhaseEntered, attempts: 1},
+		{name: "exiting", run: lifecycle.RunRunning, phase: lifecycle.PhaseExiting, attempts: 2},
+		{name: "exited before final save", run: lifecycle.RunRunning, phase: lifecycle.PhaseExited, attempts: 2},
+		{name: "exit failed before final save", run: lifecycle.RunRunning, phase: lifecycle.PhaseExitFailed, attempts: 2, lastErr: "exit failed"},
+		{name: "entering during rollback", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEntering, attempts: 1},
+		{name: "entered during rollback", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEntered, attempts: 1},
+		{name: "enter failed", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseEnterFailed, attempts: 1, lastErr: "enter failed"},
+		{name: "rolling back", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRollingBack, attempts: 2},
+		{name: "rolled back before final save", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRolledBack, attempts: 2},
+		{name: "rollback failed before final save", run: lifecycle.RunRollingBack, phase: lifecycle.PhaseRollbackFailed, attempts: 2, lastErr: "rollback failed"},
+		{name: "succeeded", run: lifecycle.RunSucceeded, phase: lifecycle.PhaseExited, attempts: 2, terminal: true},
+		{name: "rolled back", run: lifecycle.RunRolledBack, phase: lifecycle.PhaseEnterFailed, attempts: 1, lastErr: "enter failed", terminal: true},
+		{name: "exit path failed", run: lifecycle.RunFailed, phase: lifecycle.PhaseExitFailed, attempts: 2, lastErr: "exit failed", terminal: true},
+		{name: "rollback path failed", run: lifecycle.RunFailed, phase: lifecycle.PhaseRollbackFailed, attempts: 2, lastErr: "rollback failed", terminal: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			store := memory.NewStore()
 			saveSnapshot(t, store, lifecycle.Snapshot{
 				RunID: "boundary", PlanDigest: plan.Digest(), Status: test.run,
-				Phases: map[string]lifecycle.PhaseState{"phase": {Status: test.phase, LastError: test.lastErr}},
+				Phases: map[string]lifecycle.PhaseState{"phase": {Status: test.phase, Attempts: test.attempts, LastError: test.lastErr}},
 			})
 			engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
 			if err != nil {
