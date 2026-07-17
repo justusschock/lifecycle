@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+var errAdmissionPending = errors.New("lifecycle: phase admission pending")
+
 type executionStage uint8
 
 const (
@@ -95,20 +97,24 @@ func OpenCoordinator(ctx context.Context, topology *Topology, store Store, runID
 // EnterPhase waits until phase dependencies are durably entered and execution
 // capacity is available.
 func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, error) {
-	return c.admit(ctx, name, stageEnter)
+	return c.admit(ctx, name, stageEnter, true)
 }
 
 // ExitPhase waits until all dependent phases have durably completed exit.
 func (c *Coordinator) ExitPhase(ctx context.Context, name string) (*Execution, error) {
-	return c.admit(ctx, name, stageExit)
+	return c.admit(ctx, name, stageExit, true)
 }
 
 // RollbackPhase waits until all dependent phases have durably resolved rollback.
 func (c *Coordinator) RollbackPhase(ctx context.Context, name string) (*Execution, error) {
-	return c.admit(ctx, name, stageRollback)
+	return c.admit(ctx, name, stageRollback, true)
 }
 
-func (c *Coordinator) admit(ctx context.Context, name string, stage executionStage) (*Execution, error) {
+func (c *Coordinator) tryAdmit(ctx context.Context, name string, stage executionStage) (*Execution, error) {
+	return c.admit(ctx, name, stage, false)
+}
+
+func (c *Coordinator) admit(ctx context.Context, name string, stage executionStage, wait bool) (*Execution, error) {
 	if _, exists := c.topology.phases[name]; !exists {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidPhase, name)
 	}
@@ -204,6 +210,9 @@ func (c *Coordinator) admit(ctx context.Context, name string, stage executionSta
 
 		changed := c.changed
 		c.mu.Unlock()
+		if !wait {
+			return nil, errAdmissionPending
+		}
 		select {
 		case <-changed:
 		case <-ctx.Done():
@@ -264,9 +273,6 @@ func (c *Coordinator) complete(ctx context.Context, execution *Execution, action
 	}
 	candidate.Phases[execution.name] = state
 	candidate.UpdatedAt = state.UpdatedAt
-	if status, terminal := terminalStatus(candidate, execution.stage); terminal {
-		candidate.Status = status
-	}
 	if err := c.session.Save(ctx, cloneSnapshot(candidate)); err != nil {
 		if cause := context.Cause(ctx); cause == nil || !errors.Is(err, cause) {
 			c.failCompletionLocked(execution, err)
@@ -283,6 +289,9 @@ func (c *Coordinator) complete(ctx context.Context, execution *Execution, action
 		for _, active := range c.active {
 			active.cancel(actionErr)
 		}
+	}
+	if _, err := c.terminalizeLocked(ctx, execution.stage); err != nil {
+		return errors.Join(actionErr, err), true
 	}
 	c.signalLocked()
 	return actionErr, true
@@ -376,9 +385,37 @@ func (c *Coordinator) terminalizeLocked(ctx context.Context, stage executionStag
 	return true, nil
 }
 
+func (c *Coordinator) finalize(ctx context.Context, stage executionStage) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.terminalizeLocked(ctx, stage)
+	return err
+}
+
+func (c *Coordinator) waitForChange(ctx context.Context) error {
+	c.mu.Lock()
+	changed := c.changed
+	c.mu.Unlock()
+	select {
+	case <-changed:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
+func (c *Coordinator) persistenceError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fatalErr
+}
+
 func terminalStatus(snapshot Snapshot, stage executionStage) (RunStatus, bool) {
 	switch stage {
 	case stageExit:
+		if snapshot.Status == RunPending && len(snapshot.Phases) == 0 {
+			return RunSucceeded, true
+		}
 		if snapshot.Status != RunRunning || !allStatusesIn(snapshot, PhaseExited, PhaseExitFailed) {
 			return "", false
 		}

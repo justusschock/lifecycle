@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestAdversarialEntryReadinessAfterDurableRollback(t *testing.T) {
@@ -18,10 +17,6 @@ func TestAdversarialEntryReadinessAfterDurableRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, err := NewEngine(plan, &adversarialStore{}, Options{MaxParallel: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
 	snapshot := Snapshot{
 		RunID: "run", PlanDigest: plan.Digest(), Status: RunRollingBack,
 		Phases: map[string]PhaseState{
@@ -30,48 +25,48 @@ func TestAdversarialEntryReadinessAfterDurableRollback(t *testing.T) {
 			"child": {Status: PhasePending},
 		},
 	}
-	ready := engine.readyPhases(snapshot, map[string]struct{}{"b": {}}, engine.dependents(), scheduleEnter)
-	for _, phase := range ready {
-		if phase.Name == "child" {
-			t.Fatalf("child admitted after run durably entered %q", snapshot.Status)
-		}
-	}
-}
-
-func TestAdversarialAtomicEntryAdmissionAfterDurableRollback(t *testing.T) {
-	called := false
-	noop := func(context.Context) error { return nil }
-	plan, err := NewPlan([]Phase{{
-		Name: "child",
-		Enter: func(context.Context) error {
-			called = true
-			return nil
-		},
-		Exit: noop, Rollback: noop,
-	}})
+	session := &adversarialSession{snapshot: snapshot}
+	coordinator, err := OpenCoordinator(context.Background(), plan.topology, &adversarialStore{session: session}, "run", Options{MaxParallel: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &adversarialSession{}
-	run := newRunner(session, time.Now, Snapshot{
-		RunID: "run", PlanDigest: plan.Digest(), Status: RunRollingBack,
-		Phases: map[string]PhaseState{"child": {Status: PhasePending}},
-	})
-	phase := plan.phases["child"]
-	execution := run.runAction(
-		context.Background(), context.Background(), phase, phase.Enter,
-		PhaseEntering, PhaseEntered, PhaseEnterFailed, RunRollingBack,
-	)
-	if execution.actionErr != nil || execution.persistenceErr != nil {
-		t.Fatalf("runAction() = %+v, want clean rejected admission", execution)
-	}
-	if called {
-		t.Fatal("entry callback launched after run durably entered rollback")
+	defer coordinator.Close(context.Background())
+	if _, err := coordinator.EnterPhase(context.Background(), "child"); err == nil {
+		t.Fatalf("child admitted after run durably entered %q", snapshot.Status)
 	}
 	if session.saves != 0 {
 		t.Fatalf("session saves = %d, want 0", session.saves)
 	}
-	if got := run.current().Phases["child"].Status; got != PhasePending {
+}
+
+func TestAdversarialAtomicEntryAdmissionAfterDurableRollback(t *testing.T) {
+	noop := func(context.Context) error { return nil }
+	plan, err := NewPlan([]Phase{
+		{Name: "child", Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "failing", Enter: noop, Exit: noop, Rollback: noop},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &adversarialSession{snapshot: Snapshot{
+		RunID: "run", PlanDigest: plan.Digest(), Status: RunRollingBack,
+		Phases: map[string]PhaseState{
+			"child":   {Status: PhasePending},
+			"failing": {Status: PhaseEnterFailed, Attempts: 1, LastError: "failed"},
+		},
+	}}
+	coordinator, err := OpenCoordinator(context.Background(), plan.topology, &adversarialStore{session: session}, "run", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close(context.Background())
+	if _, err := coordinator.EnterPhase(context.Background(), "child"); err == nil {
+		t.Fatal("entry admitted after run durably entered rollback")
+	}
+	if session.saves != 0 {
+		t.Fatalf("session saves = %d, want 0", session.saves)
+	}
+	if got := coordinator.Snapshot().Phases["child"].Status; got != PhasePending {
 		t.Fatalf("child status = %q, want %q", got, PhasePending)
 	}
 }
@@ -145,10 +140,12 @@ func TestAdversarialSnapshotPhaseStateConsistency(t *testing.T) {
 	}
 }
 
-type adversarialStore struct{}
+type adversarialStore struct {
+	session *adversarialSession
+}
 
-func (*adversarialStore) Acquire(context.Context, string) (Session, error) {
-	panic("not used")
+func (s *adversarialStore) Acquire(context.Context, string) (Session, error) {
+	return s.session, nil
 }
 
 type adversarialSession struct {

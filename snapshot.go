@@ -74,3 +74,12 @@ type Options struct {
 	MaxParallel int
 	Clock       func() time.Time
 }
+
+func cloneSnapshot(snapshot Snapshot) Snapshot {
+	copy := snapshot
+	copy.Phases = make(map[string]PhaseState, len(snapshot.Phases))
+	for name, state := range snapshot.Phases {
+		copy.Phases[name] = state
+	}
+	return copy
+}
