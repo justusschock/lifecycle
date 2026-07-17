@@ -21,6 +21,9 @@ func NewEngine(plan *Plan, store Store, options Options) (*Engine, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("%w: nil plan", ErrInvalidPhase)
 	}
+	if plan.phases == nil || plan.levels == nil || plan.digest == "" {
+		return nil, fmt.Errorf("%w: uninitialized plan", ErrInvalidPhase)
+	}
 	if isNilStore(store) {
 		return nil, fmt.Errorf("%w: nil store", ErrInvalidPhase)
 	}

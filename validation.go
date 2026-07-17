@@ -34,6 +34,9 @@ func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
 	if !knownRunStatus(snapshot.Status) {
 		return invalidSnapshot("run has unknown status %q", snapshot.Status)
 	}
+	if err := validateRunReachability(snapshot); err != nil {
+		return err
+	}
 	if !consistentRunState(snapshot) {
 		return invalidSnapshot("phase statuses are inconsistent with run status %q", snapshot.Status)
 	}
@@ -42,6 +45,24 @@ func validateSnapshot(plan *Plan, runID string, snapshot Snapshot) error {
 	}
 	if err := validateDependencyOrdering(plan, snapshot); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateRunReachability(snapshot Snapshot) error {
+	switch snapshot.Status {
+	case RunRunning:
+		if allStatuses(snapshot, PhasePending) {
+			return invalidSnapshot("run reachability: running run has no admitted phase")
+		}
+	case RunRollingBack, RunRolledBack:
+		if !hasStatus(snapshot, PhaseEnterFailed) {
+			return invalidSnapshot("rollback provenance: run has no failed entry")
+		}
+	case RunFailed:
+		if hasStatus(snapshot, PhaseRollbackFailed) && !hasStatus(snapshot, PhaseEnterFailed) {
+			return invalidSnapshot("rollback provenance: failed rollback has no failed entry")
+		}
 	}
 	return nil
 }
@@ -146,14 +167,15 @@ func consistentRunState(snapshot Snapshot) bool {
 	case RunPending:
 		return allStatuses(snapshot, PhasePending)
 	case RunRunning:
-		return allStatusesIn(snapshot, PhasePending, PhaseEntering, PhaseEntered) ||
-			allStatusesIn(snapshot, PhaseEntered, PhaseExiting, PhaseExited, PhaseExitFailed)
+		return !allStatuses(snapshot, PhasePending) &&
+			(allStatusesIn(snapshot, PhasePending, PhaseEntering, PhaseEntered) ||
+				allStatusesIn(snapshot, PhaseEntered, PhaseExiting, PhaseExited, PhaseExitFailed))
 	case RunRollingBack:
-		return allStatusesIn(snapshot, PhasePending, PhaseEntering, PhaseEntered, PhaseEnterFailed, PhaseRollingBack, PhaseRolledBack, PhaseRollbackFailed)
+		return hasStatus(snapshot, PhaseEnterFailed) && allStatusesIn(snapshot, PhasePending, PhaseEntering, PhaseEntered, PhaseEnterFailed, PhaseRollingBack, PhaseRolledBack, PhaseRollbackFailed)
 	case RunSucceeded:
 		return allStatuses(snapshot, PhaseExited)
 	case RunRolledBack:
-		return allStatusesIn(snapshot, PhasePending, PhaseEnterFailed, PhaseRolledBack)
+		return hasStatus(snapshot, PhaseEnterFailed) && allStatusesIn(snapshot, PhasePending, PhaseEnterFailed, PhaseRolledBack)
 	case RunFailed:
 		return terminalExitFailure(snapshot) || terminalRollbackFailure(snapshot)
 	default:
@@ -166,7 +188,7 @@ func terminalExitFailure(snapshot Snapshot) bool {
 }
 
 func terminalRollbackFailure(snapshot Snapshot) bool {
-	return hasStatus(snapshot, PhaseRollbackFailed) && allStatusesIn(snapshot, PhasePending, PhaseEnterFailed, PhaseRolledBack, PhaseRollbackFailed)
+	return hasStatus(snapshot, PhaseEnterFailed) && hasStatus(snapshot, PhaseRollbackFailed) && allStatusesIn(snapshot, PhasePending, PhaseEnterFailed, PhaseRolledBack, PhaseRollbackFailed)
 }
 
 func allStatuses(snapshot Snapshot, status PhaseStatus) bool {
