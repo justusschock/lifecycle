@@ -61,10 +61,13 @@ func digestArtifact(mediaType string, version uint64, data []byte, metadata map[
 	writeCanonicalUint64(hash, version)
 	writeCanonicalBytes(hash, data)
 
-	keys := maps.Keys(metadata)
-	sortedKeys := slices.Sorted(keys)
-	writeCanonicalUint64(hash, uint64(len(sortedKeys)))
-	for _, key := range sortedKeys {
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	writeCanonicalUint64(hash, uint64(len(keys)))
+	for _, key := range keys {
 		writeCanonicalBytes(hash, []byte(key))
 		writeCanonicalBytes(hash, []byte(metadata[key]))
 	}
