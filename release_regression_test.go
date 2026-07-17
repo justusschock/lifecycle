@@ -450,6 +450,22 @@ func TestEngineRejectsTypedNilSession(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsMismatchedSessionAndStillReleasesIt(t *testing.T) {
+	noop := func(context.Context) error { return nil }
+	plan := singlePhasePlan(t, "phase", noop, noop, noop)
+	session := &mismatchedSession{}
+	engine, err := lifecycle.NewEngine(plan, mismatchedSessionStore{session: session}, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Run(context.Background(), "requested"); !errors.Is(err, lifecycle.ErrInvalidSnapshot) {
+		t.Fatalf("Run error = %v, want %v", err, lifecycle.ErrInvalidSnapshot)
+	}
+	if !session.released.Load() {
+		t.Fatal("mismatched session was not released")
+	}
+}
+
 type staticStore struct {
 	snapshot lifecycle.Snapshot
 }
@@ -480,4 +496,31 @@ type typedNilSessionStore struct{}
 func (typedNilSessionStore) Acquire(context.Context, string) (lifecycle.Session, error) {
 	var session *staticSession
 	return session, nil
+}
+
+type mismatchedSessionStore struct {
+	session *mismatchedSession
+}
+
+func (store mismatchedSessionStore) Acquire(context.Context, string) (lifecycle.Session, error) {
+	return store.session, nil
+}
+
+type mismatchedSession struct {
+	released atomic.Bool
+}
+
+func (*mismatchedSession) RunID() string { return "different" }
+
+func (*mismatchedSession) Load(context.Context) (lifecycle.Snapshot, error) {
+	return lifecycle.Snapshot{}, errors.New("Load must not be called")
+}
+
+func (*mismatchedSession) Save(context.Context, lifecycle.Snapshot) error {
+	return errors.New("Save must not be called")
+}
+
+func (session *mismatchedSession) Release(context.Context) error {
+	session.released.Store(true)
+	return nil
 }

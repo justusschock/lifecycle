@@ -67,3 +67,14 @@ func TestSessionReleaseIgnoresCanceledAcquisitionContext(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStoreZeroValueIsReadyForUse(t *testing.T) {
+	var store memory.Store
+	session, err := store.Acquire(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
