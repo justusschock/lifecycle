@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	concurrency "github.com/justusschock/go-concurrency"
@@ -19,7 +20,7 @@ func NewEngine(plan *Plan, store Store, options Options) (*Engine, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("%w: nil plan", ErrInvalidPhase)
 	}
-	if store == nil {
+	if isNilStore(store) {
 		return nil, fmt.Errorf("%w: nil store", ErrInvalidPhase)
 	}
 	if options.MaxParallel < 0 {
@@ -242,4 +243,17 @@ func existingFailure(levels [][]Phase, snapshot Snapshot) error {
 
 func isTerminal(status RunStatus) bool {
 	return status == RunSucceeded || status == RunRolledBack || status == RunFailed
+}
+
+func isNilStore(store Store) bool {
+	if store == nil {
+		return true
+	}
+	value := reflect.ValueOf(store)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }

@@ -701,6 +701,10 @@ func TestEngineRejectsInvalidConstructionAndRunID(t *testing.T) {
 	if _, err := lifecycle.NewEngine(plan, nil, lifecycle.Options{}); err == nil {
 		t.Fatal("NewEngine accepted a nil store")
 	}
+	var typedNilStore *memory.Store
+	if _, err := lifecycle.NewEngine(plan, typedNilStore, lifecycle.Options{}); err == nil {
+		t.Fatal("NewEngine accepted a typed-nil store")
+	}
 	if _, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: -1}); err == nil {
 		t.Fatal("NewEngine accepted negative parallelism")
 	}
