@@ -317,10 +317,8 @@ func (e *Engine) stageErrors(snapshot Snapshot, failed PhaseStatus, liveErrors m
 		}
 		if liveErr := liveErrors[name]; liveErr != nil {
 			ordered[name] = liveErr
-		} else if state.LastError != "" {
-			ordered[name] = errors.New(state.LastError)
 		} else {
-			ordered[name] = fmt.Errorf("phase %q failed during %s", name, failed)
+			ordered[name] = errors.New(state.LastError)
 		}
 	}
 	return e.orderedErrors(ordered)
