@@ -304,7 +304,7 @@ func (c *Coordinator) stageCompleteLocked(status PhaseStatus, stage executionSta
 func (c *Coordinator) stageRunAllowedLocked(stage executionStage) bool {
 	switch stage {
 	case stageExit:
-		return c.snapshot.Status == RunRunning
+		return c.snapshot.Status == RunRunning && allStatusesIn(c.snapshot, PhaseEntered, PhaseExiting, PhaseExited, PhaseExitFailed)
 	case stageRollback:
 		return c.snapshot.Status == RunRollingBack
 	default:
