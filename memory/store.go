@@ -39,6 +39,9 @@ func (s *Store) Acquire(ctx context.Context, runID string) (lifecycle.Session, e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.runs == nil {
+		s.runs = make(map[string]*runState)
+	}
 	state := s.runs[runID]
 	if state == nil {
 		state = &runState{}

@@ -45,13 +45,22 @@ type Snapshot struct {
 }
 
 type Store interface {
+	// Acquire establishes exclusive, fenced ownership of runID across every
+	// process that can access the store. It returns ErrRunOwned while another
+	// owner is active.
 	Acquire(context.Context, string) (Session, error)
 }
 
 type Session interface {
+	// RunID identifies the only run this session may load or save.
 	RunID() string
+	// Load returns the current durable state for RunID.
 	Load(context.Context) (Snapshot, error)
+	// Save durably replaces the state for RunID. Implementations must reject
+	// writes from a released or superseded fence with ErrOwnershipLost.
 	Save(context.Context, Snapshot) error
+	// Release relinquishes ownership. Callers should use a context independent
+	// of cancellation of the work performed while the session was active.
 	Release(context.Context) error
 }
 

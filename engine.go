@@ -51,6 +51,9 @@ func (e *Engine) Run(ctx context.Context, runID string) (result Snapshot, result
 		releaseErr := session.Release(context.WithoutCancel(ctx))
 		resultErr = errors.Join(resultErr, releaseErr)
 	}()
+	if session.RunID() != runID {
+		return Snapshot{}, fmt.Errorf("%w: store returned session for %q, want %q", ErrInvalidSnapshot, session.RunID(), runID)
+	}
 
 	snapshot, err := session.Load(ctx)
 	if err != nil {
