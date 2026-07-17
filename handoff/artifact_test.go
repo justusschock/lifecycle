@@ -15,7 +15,7 @@ func TestNewArtifactCopiesInputsAndComputesStableIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewArtifact("application/octet-stream", 7, []byte("state"), map[string]string{"other": "metadata"})
+	second, err := NewArtifact("application/octet-stream", 7, []byte("state"), map[string]string{"owner": "source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +37,45 @@ func TestNewArtifactCopiesInputsAndComputesStableIdentity(t *testing.T) {
 	clone.Metadata["owner"] = "clone"
 	if !bytes.Equal(artifact.Data, []byte("state")) || artifact.Metadata["owner"] != "source" {
 		t.Fatalf("artifact changed with clone: data=%q metadata=%v", artifact.Data, artifact.Metadata)
+	}
+}
+
+func TestArtifactIdentityCommitsToCanonicalSemanticEnvelope(t *testing.T) {
+	first, err := NewArtifact("application/example", 7, []byte("state"), map[string]string{"z": "last", "a": "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewArtifact("application/example", 7, []byte("state"), map[string]string{"a": "first", "z": "last"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID || first.Digest != second.Digest {
+		t.Fatalf("map iteration changed identity: first=%q second=%q", first.ID, second.ID)
+	}
+
+	mutations := []struct {
+		name   string
+		mutate func(*Artifact)
+	}{
+		{name: "media type", mutate: func(artifact *Artifact) { artifact.MediaType = "application/other" }},
+		{name: "version", mutate: func(artifact *Artifact) { artifact.Version++ }},
+		{name: "data", mutate: func(artifact *Artifact) { artifact.Data[0]++ }},
+		{name: "metadata value", mutate: func(artifact *Artifact) { artifact.Metadata["a"] = "changed" }},
+		{name: "metadata key", mutate: func(artifact *Artifact) {
+			artifact.Metadata["other"] = artifact.Metadata["a"]
+			delete(artifact.Metadata, "a")
+		}},
+		{name: "metadata addition", mutate: func(artifact *Artifact) { artifact.Metadata["extra"] = "value" }},
+		{name: "metadata removal", mutate: func(artifact *Artifact) { delete(artifact.Metadata, "a") }},
+	}
+	for _, test := range mutations {
+		t.Run(test.name, func(t *testing.T) {
+			artifact := first.Clone()
+			test.mutate(&artifact)
+			if err := artifact.Validate(); !errors.Is(err, lifecycle.ErrIntegrity) {
+				t.Fatalf("Validate error = %v, want %v", err, lifecycle.ErrIntegrity)
+			}
+		})
 	}
 }
 
