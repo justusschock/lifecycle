@@ -123,8 +123,9 @@ resolved. An exit failure does not synthesize a rollback.
 
 `MaxParallel` defaults to `1` when zero. Negative values are rejected. `Clock`
 defaults to `time.Now` and can be replaced for deterministic timestamps.
-`NewEngine` rejects a nil plan and nil stores, including stores held in a typed
-nil interface.
+`NewEngine` rejects nil or uninitialized plans and nil stores, including stores
+held in a typed nil interface. A canonical empty plan created by `NewPlan(nil)`
+is valid.
 
 ## Persistence and recovery
 
@@ -162,11 +163,15 @@ restartable. The engine returns the persistence error and the last successfully
 saved snapshot without incorrectly advancing the run to a terminal state.
 
 Loaded snapshots are validated before any action runs: the requested run ID,
-plan digest, exact planned phase set, phase and run statuses, and terminal-state
-consistency must all agree. A plan mismatch returns both `ErrInvalidSnapshot`
-and `ErrPlanChanged` through `errors.Is`. A `succeeded` snapshot is valid only
-when every phase is `exited`. Calling `Run` for a valid run already in
-`succeeded`, `rolled_back`, or `failed` state returns `ErrRunTerminal`.
+plan digest, exact planned phase set, phase and run statuses, reachable run
+state, and terminal-state consistency must all agree. A `running` snapshot must
+contain an admitted phase. Every `rolling_back`, `rolled_back`, or
+rollback-derived `failed` snapshot must retain an `enter_failed` phase as the
+durable reason rollback began. A plan mismatch returns both
+`ErrInvalidSnapshot` and `ErrPlanChanged` through `errors.Is`. A `succeeded`
+snapshot is valid only when every phase is `exited`. Calling `Run` for a valid
+run already in `succeeded`, `rolled_back`, or `failed` state returns
+`ErrRunTerminal`.
 
 ### Store contract
 
