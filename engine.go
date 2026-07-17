@@ -58,28 +58,42 @@ func (e *Engine) Run(ctx context.Context, runID string) (Snapshot, error) {
 	run := newRunner(e.store, e.options.Clock, snapshot)
 	if snapshot.Status == RunRollingBack {
 		rollbackErr := e.rollback(ctx, run)
+		if isPersistenceError(rollbackErr) {
+			return run.current(), rollbackErr
+		}
 		return e.finishRollback(ctx, run, rollbackErr)
 	}
-	run.snapshot.Status = RunRunning
 
-	if failure := existingFailure(snapshot); failure != nil {
+	if failure := existingFailure(e.plan.Levels(), snapshot); failure != nil {
 		if statusErr := run.setRunStatus(ctx, RunRollingBack); statusErr != nil {
 			return run.current(), errors.Join(failure, statusErr)
 		}
 		rollbackErr := e.rollback(ctx, run)
+		if isPersistenceError(rollbackErr) {
+			return run.current(), errors.Join(failure, rollbackErr)
+		}
 		result, finishErr := e.finishRollback(ctx, run, rollbackErr)
 		return result, errors.Join(failure, finishErr)
 	}
 
 	if err := e.enter(ctx, run); err != nil {
+		if isPersistenceError(err) {
+			return run.current(), err
+		}
 		if statusErr := run.setRunStatus(ctx, RunRollingBack); statusErr != nil {
 			return run.current(), errors.Join(err, statusErr)
 		}
 		rollbackErr := e.rollback(ctx, run)
+		if isPersistenceError(rollbackErr) {
+			return run.current(), errors.Join(err, rollbackErr)
+		}
 		result, finishErr := e.finishRollback(ctx, run, rollbackErr)
 		return result, errors.Join(err, finishErr)
 	}
 	if err := e.exit(ctx, run); err != nil {
+		if isPersistenceError(err) {
+			return run.current(), err
+		}
 		statusErr := run.setRunStatus(ctx, RunFailed)
 		return run.current(), errors.Join(err, statusErr)
 	}
@@ -150,6 +164,9 @@ func (e *Engine) rollback(ctx context.Context, run *runner) error {
 		phases := selectPhases(levels[index], run, PhaseEntered, PhaseRollingBack)
 		if err := e.runRollbackLevel(ctx, run, phases); err != nil {
 			rollbackErrors = append(rollbackErrors, err)
+			if isPersistenceError(err) {
+				return errors.Join(rollbackErrors...)
+			}
 		}
 	}
 	return errors.Join(rollbackErrors...)
@@ -160,7 +177,11 @@ func (e *Engine) runRollbackLevel(ctx context.Context, run *runner, phases []Pha
 		return nil
 	}
 	results, err := concurrency.ParallelMap(ctx, phases, e.options.MaxParallel, func(actionCtx context.Context, phase Phase) (error, error) {
-		return run.runAction(ctx, actionCtx, phase, phase.Rollback, PhaseRollingBack, PhaseRolledBack, RunFailed), nil
+		actionErr := run.runAction(ctx, actionCtx, phase, phase.Rollback, PhaseRollingBack, PhaseRolledBack, RunFailed)
+		if isPersistenceError(actionErr) {
+			return nil, actionErr
+		}
+		return actionErr, nil
 	})
 	if err != nil {
 		return err
@@ -201,16 +222,22 @@ func selectPhases(level []Phase, run *runner, statuses ...PhaseStatus) []Phase {
 	return selected
 }
 
-func existingFailure(snapshot Snapshot) error {
-	for name, state := range snapshot.Phases {
-		if state.Status == PhaseFailed {
-			if state.LastError == "" {
-				return fmt.Errorf("phase %q failed", name)
+func existingFailure(levels [][]Phase, snapshot Snapshot) error {
+	var failures []error
+	for _, level := range levels {
+		for _, phase := range level {
+			state := snapshot.Phases[phase.Name]
+			if state.Status != PhaseFailed {
+				continue
 			}
-			return errors.New(state.LastError)
+			if state.LastError == "" {
+				failures = append(failures, fmt.Errorf("phase %q failed", phase.Name))
+			} else {
+				failures = append(failures, errors.New(state.LastError))
+			}
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func isTerminal(status RunStatus) bool {

@@ -375,11 +375,136 @@ func TestEngineReturnsPreActionStoreFailureWithoutRunningAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Run(context.Background(), "failed-save"); !errors.Is(err, want) {
+	snapshot, err := engine.Run(context.Background(), "failed-save")
+	if !errors.Is(err, want) {
 		t.Fatalf("Run error = %v, want %v", err, want)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("action calls = %d, want 0", got)
+	}
+	if got := snapshot.Phases["start"].Status; got != lifecycle.PhasePending {
+		t.Fatalf("returned phase status = %q, want last durably saved status %q", got, lifecycle.PhasePending)
+	}
+	if _, err := store.Load(context.Background(), "failed-save"); !errors.Is(err, lifecycle.ErrSnapshotNotFound) {
+		t.Fatalf("Load after rejected first save error = %v, want %v", err, lifecycle.ErrSnapshotNotFound)
+	}
+}
+
+func TestEngineLeavesInterruptedActionsRestartableAfterTerminalSaveFailure(t *testing.T) {
+	t.Run("enter", func(t *testing.T) {
+		want := errors.New("entered status save failed")
+		store := newRecordingStore()
+		store.failAt = 2
+		store.failure = want
+		var enterCalls atomic.Int32
+		var rollbackCalls atomic.Int32
+		noop := func(context.Context) error { return nil }
+		plan := singlePhasePlan(t, "phase", func(context.Context) error { enterCalls.Add(1); return nil }, noop, func(context.Context) error { rollbackCalls.Add(1); return nil })
+		engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := engine.Run(context.Background(), "interrupted-enter")
+		if !errors.Is(err, want) {
+			t.Fatalf("first Run error = %v, want %v", err, want)
+		}
+		if snapshot.Status != lifecycle.RunRunning || snapshot.Phases["phase"].Status != lifecycle.PhaseEntering {
+			t.Fatalf("first snapshot = run:%q phase:%q, want running/entering", snapshot.Status, snapshot.Phases["phase"].Status)
+		}
+		if rollbackCalls.Load() != 0 {
+			t.Fatalf("rollback calls after persistence error = %d, want 0", rollbackCalls.Load())
+		}
+		if _, err := engine.Run(context.Background(), "interrupted-enter"); err != nil {
+			t.Fatal(err)
+		}
+		if enterCalls.Load() != 2 || rollbackCalls.Load() != 0 {
+			t.Fatalf("calls after restart = enter:%d rollback:%d, want 2 and 0", enterCalls.Load(), rollbackCalls.Load())
+		}
+	})
+
+	t.Run("exit", func(t *testing.T) {
+		want := errors.New("exited status save failed")
+		store := newRecordingStore()
+		store.failAt = 4
+		store.failure = want
+		var enterCalls atomic.Int32
+		var exitCalls atomic.Int32
+		plan := singlePhasePlan(t, "phase", func(context.Context) error { enterCalls.Add(1); return nil }, func(context.Context) error { exitCalls.Add(1); return nil }, func(context.Context) error { return nil })
+		engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := engine.Run(context.Background(), "interrupted-exit")
+		if !errors.Is(err, want) {
+			t.Fatalf("first Run error = %v, want %v", err, want)
+		}
+		if snapshot.Status != lifecycle.RunRunning || snapshot.Phases["phase"].Status != lifecycle.PhaseExiting {
+			t.Fatalf("first snapshot = run:%q phase:%q, want running/exiting", snapshot.Status, snapshot.Phases["phase"].Status)
+		}
+		if _, err := engine.Run(context.Background(), "interrupted-exit"); err != nil {
+			t.Fatal(err)
+		}
+		if enterCalls.Load() != 1 || exitCalls.Load() != 2 {
+			t.Fatalf("calls after restart = enter:%d exit:%d, want 1 and 2", enterCalls.Load(), exitCalls.Load())
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		entryFailure := errors.New("entry failed")
+		saveFailure := errors.New("rolled-back status save failed")
+		store := newRecordingStore()
+		store.failAt = 7
+		store.failure = saveFailure
+		var rollbackCalls atomic.Int32
+		noop := func(context.Context) error { return nil }
+		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+			{Name: "root", Enter: noop, Exit: noop, Rollback: func(context.Context) error { rollbackCalls.Add(1); return nil }},
+			{Name: "fail", DependsOn: []string{"root"}, Enter: func(context.Context) error { return entryFailure }, Exit: noop, Rollback: noop},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := engine.Run(context.Background(), "interrupted-rollback")
+		if !errors.Is(err, entryFailure) || !errors.Is(err, saveFailure) {
+			t.Fatalf("first Run error = %v, want entry and save failures", err)
+		}
+		if snapshot.Status != lifecycle.RunRollingBack || snapshot.Phases["root"].Status != lifecycle.PhaseRollingBack {
+			t.Fatalf("first snapshot = run:%q root:%q, want rolling_back/rolling_back", snapshot.Status, snapshot.Phases["root"].Status)
+		}
+		if _, err := engine.Run(context.Background(), "interrupted-rollback"); err != nil {
+			t.Fatal(err)
+		}
+		if rollbackCalls.Load() != 2 {
+			t.Fatalf("rollback calls after restart = %d, want 2", rollbackCalls.Load())
+		}
+	})
+}
+
+func TestEngineDoesNotExposeFailedRunStatusSaveAsCurrent(t *testing.T) {
+	want := errors.New("final status save failed")
+	store := newRecordingStore()
+	store.failAt = 5
+	store.failure = want
+	noop := func(context.Context) error { return nil }
+	plan := singlePhasePlan(t, "phase", noop, noop, noop)
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.Run(context.Background(), "final-save")
+	if !errors.Is(err, want) {
+		t.Fatalf("Run error = %v, want %v", err, want)
+	}
+	durable := store.latest()
+	if snapshot.Status != durable.Status {
+		t.Fatalf("returned status = %q, durable status = %q", snapshot.Status, durable.Status)
+	}
+	if snapshot.Status != lifecycle.RunRunning {
+		t.Fatalf("returned status = %q, want last saved status %q", snapshot.Status, lifecycle.RunRunning)
 	}
 }
 
@@ -535,6 +660,36 @@ func TestEngineRejectsChangedPlanAndTerminalRunBeforeActions(t *testing.T) {
 
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("actions called %d times", got)
+	}
+}
+
+func TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder(t *testing.T) {
+	var calls atomic.Int32
+	noop := func(context.Context) error { calls.Add(1); return nil }
+	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+		{Name: "root", Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "b", DependsOn: []string{"root"}, Enter: noop, Exit: noop, Rollback: noop},
+		{Name: "a", DependsOn: []string{"root"}, Enter: noop, Exit: noop, Rollback: noop},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.NewStore()
+	phases := make(map[string]lifecycle.PhaseState)
+	phases["b"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, LastError: "b failed"}
+	phases["a"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, LastError: "a failed"}
+	phases["root"] = lifecycle.PhaseState{Status: lifecycle.PhaseEntered}
+	saveSnapshot(t, store, lifecycle.Snapshot{RunID: "recovered-failures", PlanDigest: plan.Digest(), Status: lifecycle.RunRunning, Phases: phases})
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Run(context.Background(), "recovered-failures")
+	if err == nil || err.Error() != "a failed\nb failed" {
+		t.Fatalf("Run error = %q, want deterministic joined failures", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("action calls = %d, want only root rollback", got)
 	}
 }
 

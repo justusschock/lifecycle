@@ -14,6 +14,30 @@ type runner struct {
 	mu       sync.Mutex
 }
 
+type persistenceError struct {
+	err error
+}
+
+func (e *persistenceError) Error() string {
+	return e.err.Error()
+}
+
+func (e *persistenceError) Unwrap() error {
+	return e.err
+}
+
+func isPersistenceError(err error) bool {
+	var target *persistenceError
+	return errors.As(err, &target)
+}
+
+func wrapPersistenceError(err error) error {
+	if err == nil || isPersistenceError(err) {
+		return err
+	}
+	return &persistenceError{err: err}
+}
+
 func newRunner(store Store, clock func() time.Time, snapshot Snapshot) *runner {
 	return &runner{store: store, clock: clock, snapshot: cloneSnapshot(snapshot)}
 }
@@ -33,9 +57,14 @@ func (r *runner) phaseStatus(name string) PhaseStatus {
 func (r *runner) setRunStatus(ctx context.Context, status RunStatus) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.snapshot.Status = status
-	r.snapshot.UpdatedAt = r.clock()
-	return r.store.Save(ctx, cloneSnapshot(r.snapshot))
+	candidate := cloneSnapshot(r.snapshot)
+	candidate.Status = status
+	candidate.UpdatedAt = r.clock()
+	if err := r.store.Save(ctx, cloneSnapshot(candidate)); err != nil {
+		return wrapPersistenceError(err)
+	}
+	r.snapshot = candidate
+	return nil
 }
 
 func (r *runner) runAction(persistCtx, actionCtx context.Context, phase Phase, action Action, inProgress, completed PhaseStatus, failedRunStatus RunStatus) error {
@@ -44,6 +73,9 @@ func (r *runner) runAction(persistCtx, actionCtx context.Context, phase Phase, a
 	}
 
 	actionErr := action(actionCtx)
+	if isPersistenceError(actionErr) {
+		return actionErr
+	}
 	terminal := completed
 	lastError := ""
 	if actionErr != nil {
@@ -61,19 +93,27 @@ func (r *runner) runAction(persistCtx, actionCtx context.Context, phase Phase, a
 func (r *runner) transition(ctx context.Context, name string, status PhaseStatus, lastError string, increment bool, runStatus RunStatus) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.snapshot.Phases[name]
+	candidate := cloneSnapshot(r.snapshot)
+	state := candidate.Phases[name]
 	state.Status = status
 	state.LastError = lastError
 	state.UpdatedAt = r.clock()
 	if increment {
 		state.Attempts++
 	}
-	r.snapshot.Phases[name] = state
-	if runStatus != "" {
-		r.snapshot.Status = runStatus
+	candidate.Phases[name] = state
+	if candidate.Status == RunPending {
+		candidate.Status = RunRunning
 	}
-	r.snapshot.UpdatedAt = state.UpdatedAt
-	return r.store.Save(ctx, cloneSnapshot(r.snapshot))
+	if runStatus != "" {
+		candidate.Status = runStatus
+	}
+	candidate.UpdatedAt = state.UpdatedAt
+	if err := r.store.Save(ctx, cloneSnapshot(candidate)); err != nil {
+		return wrapPersistenceError(err)
+	}
+	r.snapshot = candidate
+	return nil
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
