@@ -347,30 +347,35 @@ func TestCoordinatorCleanupFailureDoesNotSuppressAncestors(t *testing.T) {
 }
 
 func TestCoordinatorRetriesInterruptedExitAndRollback(t *testing.T) {
-	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+	exitTopology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
 
 	exitStore := memory.NewStore()
-	exiting := openCoordinator(t, topology, exitStore, "retry-exit", lifecycle.Options{})
+	exiting := openCoordinator(t, exitTopology, exitStore, "retry-exit", lifecycle.Options{})
 	completePhase(t, enterPhase(t, exiting, "phase"), nil)
 	if execution := exitPhase(t, exiting, "phase"); !execution.ShouldRun() {
 		t.Fatal("initial exit did not require execution")
 	}
 	closeCoordinator(t, exiting)
-	exitRestart := openCoordinator(t, topology, exitStore, "retry-exit", lifecycle.Options{})
+	exitRestart := openCoordinator(t, exitTopology, exitStore, "retry-exit", lifecycle.Options{})
 	completePhase(t, exitPhase(t, exitRestart, "phase"), nil)
 	closeCoordinator(t, exitRestart)
 
 	rollbackStore := memory.NewStore()
-	rollingBack := openCoordinator(t, topology, rollbackStore, "retry-rollback", lifecycle.Options{})
-	phase := enterPhase(t, rollingBack, "phase")
-	if err := phase.Complete(context.Background(), errors.New("failed")); err == nil {
+	rollbackTopology := coordinatorTopology(t,
+		lifecycle.PhaseSpec{Name: "phase"},
+		lifecycle.PhaseSpec{Name: "failing"},
+	)
+	rollingBack := openCoordinator(t, rollbackTopology, rollbackStore, "retry-rollback", lifecycle.Options{})
+	completePhase(t, enterPhase(t, rollingBack, "phase"), nil)
+	if err := enterPhase(t, rollingBack, "failing").Complete(context.Background(), errors.New("failed")); err == nil {
 		t.Fatal("entry failure completion returned nil")
 	}
-	closeCoordinator(t, rollingBack)
-	rollbackRestart := openCoordinator(t, topology, rollbackStore, "retry-rollback", lifecycle.Options{})
-	if execution := rollbackPhase(t, rollbackRestart, "phase"); execution.ShouldRun() {
-		t.Fatal("failed entry was admitted for rollback")
+	if execution := rollbackPhase(t, rollingBack, "phase"); !execution.ShouldRun() {
+		t.Fatal("initial rollback did not require execution")
 	}
+	closeCoordinator(t, rollingBack)
+	rollbackRestart := openCoordinator(t, rollbackTopology, rollbackStore, "retry-rollback", lifecycle.Options{})
+	completePhase(t, rollbackPhase(t, rollbackRestart, "phase"), nil)
 	if status := rollbackRestart.Snapshot().Status; status != lifecycle.RunRolledBack {
 		t.Fatalf("run status = %q, want %q", status, lifecycle.RunRolledBack)
 	}
