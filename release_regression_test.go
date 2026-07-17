@@ -519,6 +519,27 @@ func TestEngineValidatesLoadedSnapshots(t *testing.T) {
 	}
 }
 
+func TestEngineAcceptsFailureWhoseErrorTextIsEmpty(t *testing.T) {
+	want := emptyTextError{}
+	noop := func(context.Context) error { return nil }
+	plan := singlePhasePlan(t, "phase", func(context.Context) error { return want }, noop, noop)
+	store := memory.NewStore()
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := engine.Run(context.Background(), "empty-error")
+	if !errors.Is(err, want) {
+		t.Fatalf("first Run error = %v, want live error identity", err)
+	}
+	if snapshot.Status != lifecycle.RunRolledBack || snapshot.Phases["phase"].Status != lifecycle.PhaseEnterFailed {
+		t.Fatalf("snapshot = run:%q phase:%q", snapshot.Status, snapshot.Phases["phase"].Status)
+	}
+	if _, err := engine.Run(context.Background(), "empty-error"); !errors.Is(err, lifecycle.ErrRunTerminal) || errors.Is(err, lifecycle.ErrInvalidSnapshot) {
+		t.Fatalf("terminal Run error = %v, want only %v", err, lifecycle.ErrRunTerminal)
+	}
+}
+
 func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
@@ -599,6 +620,10 @@ func TestEngineRejectsMismatchedSessionAndStillReleasesIt(t *testing.T) {
 type staticStore struct {
 	snapshot lifecycle.Snapshot
 }
+
+type emptyTextError struct{}
+
+func (emptyTextError) Error() string { return "" }
 
 func (store staticStore) Acquire(context.Context, string) (lifecycle.Session, error) {
 	return &staticSession{snapshot: cloneSnapshot(store.snapshot)}, nil
