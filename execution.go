@@ -9,6 +9,7 @@ import (
 type Execution struct {
 	coordinator *Coordinator
 	name        string
+	stage       executionStage
 	shouldRun   bool
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -43,7 +44,7 @@ func (e *Execution) Complete(ctx context.Context, actionErr error) error {
 	if e.completed {
 		return e.resultErr
 	}
-	resultErr, persisted := e.coordinator.completeEntry(ctx, e, actionErr)
+	resultErr, persisted := e.coordinator.complete(ctx, e, actionErr)
 	if persisted {
 		e.completed = true
 		e.resultErr = resultErr

@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+type executionStage uint8
+
+const (
+	stageEnter executionStage = iota
+	stageExit
+	stageRollback
+)
+
 // Coordinator owns one fenced, durable lifecycle run.
 type Coordinator struct {
 	topology *Topology
@@ -87,6 +95,20 @@ func OpenCoordinator(ctx context.Context, topology *Topology, store Store, runID
 // EnterPhase waits until phase dependencies are durably entered and execution
 // capacity is available.
 func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, error) {
+	return c.admit(ctx, name, stageEnter)
+}
+
+// ExitPhase waits until all dependent phases have durably completed exit.
+func (c *Coordinator) ExitPhase(ctx context.Context, name string) (*Execution, error) {
+	return c.admit(ctx, name, stageExit)
+}
+
+// RollbackPhase waits until all dependent phases have durably resolved rollback.
+func (c *Coordinator) RollbackPhase(ctx context.Context, name string) (*Execution, error) {
+	return c.admit(ctx, name, stageRollback)
+}
+
+func (c *Coordinator) admit(ctx context.Context, name string, stage executionStage) (*Execution, error) {
 	if _, exists := c.topology.phases[name]; !exists {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidPhase, name)
 	}
@@ -109,38 +131,51 @@ func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, 
 			c.mu.Unlock()
 			return nil, ErrRunTerminal
 		}
+		if stage != stageEnter && !c.stageRunAllowedLocked(stage) {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("%w: %s is not available while run is %q", ErrInvalidPhase, stage, c.snapshot.Status)
+		}
+		if terminalized, err := c.terminalizeLocked(ctx, stage); err != nil {
+			c.mu.Unlock()
+			return nil, err
+		} else if terminalized {
+			c.mu.Unlock()
+			return skippedExecution(), nil
+		}
 
 		state := c.snapshot.Phases[name]
-		if hasSuccessfulEntryEvidence(state.Status) || state.Status == PhaseEnterFailed {
+		if c.stageCompleteLocked(state.Status, stage) {
+			c.mu.Unlock()
+			return skippedExecution(), nil
+		}
+		if stage == stageEnter {
 			if state.Status == PhaseEnterFailed {
 				err := c.phaseErrorLocked(name)
 				c.mu.Unlock()
 				return nil, err
 			}
-			c.mu.Unlock()
-			return skippedExecution(), nil
-		}
-		if failure := c.dependencyFailureLocked(name); failure != nil {
-			c.mu.Unlock()
-			return nil, errors.Join(ErrDependencyFailed, failure)
-		}
-		if c.snapshot.Status == RunRollingBack && state.Status != PhaseEntering {
-			err := c.entryFailureLocked()
-			c.mu.Unlock()
-			return nil, err
+			if failure := c.dependencyFailureLocked(name); failure != nil {
+				c.mu.Unlock()
+				return nil, errors.Join(ErrDependencyFailed, failure)
+			}
+			if c.snapshot.Status == RunRollingBack && state.Status != PhaseEntering {
+				err := c.entryFailureLocked()
+				c.mu.Unlock()
+				return nil, err
+			}
 		}
 
 		_, duplicate := c.active[name]
-		ready := state.Status == PhaseEntering || (state.Status == PhasePending && c.dependenciesEnteredLocked(name))
+		ready := c.stageReadyLocked(name, state.Status, stage)
 		if !duplicate && ready && len(c.active) < c.options.MaxParallel {
 			candidate := cloneSnapshot(c.snapshot)
 			phaseState := candidate.Phases[name]
-			phaseState.Status = PhaseEntering
+			phaseState.Status = stageInProgress(stage)
 			phaseState.Attempts++
 			phaseState.LastError = ""
 			phaseState.UpdatedAt = c.options.Clock()
 			candidate.Phases[name] = phaseState
-			if candidate.Status == RunPending {
+			if stage == stageEnter && candidate.Status == RunPending {
 				candidate.Status = RunRunning
 			}
 			candidate.UpdatedAt = phaseState.UpdatedAt
@@ -156,6 +191,7 @@ func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, 
 			execution := &Execution{
 				coordinator: c,
 				name:        name,
+				stage:       stage,
 				shouldRun:   true,
 				ctx:         executionCtx,
 				cancel:      cancel,
@@ -204,7 +240,7 @@ func (c *Coordinator) Close(ctx context.Context) error {
 	return nil
 }
 
-func (c *Coordinator) completeEntry(ctx context.Context, execution *Execution, actionErr error) (error, bool) {
+func (c *Coordinator) complete(ctx context.Context, execution *Execution, actionErr error) (error, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -218,14 +254,19 @@ func (c *Coordinator) completeEntry(ctx context.Context, execution *Execution, a
 	state := candidate.Phases[execution.name]
 	state.UpdatedAt = c.options.Clock()
 	state.LastError = ""
-	state.Status = PhaseEntered
+	state.Status = stageCompleted(execution.stage)
 	if actionErr != nil {
-		state.Status = PhaseEnterFailed
+		state.Status = stageFailed(execution.stage)
 		state.LastError = actionErr.Error()
-		candidate.Status = RunRollingBack
+		if execution.stage == stageEnter {
+			candidate.Status = RunRollingBack
+		}
 	}
 	candidate.Phases[execution.name] = state
 	candidate.UpdatedAt = state.UpdatedAt
+	if status, terminal := terminalStatus(candidate, execution.stage); terminal {
+		candidate.Status = status
+	}
 	if err := c.session.Save(ctx, cloneSnapshot(candidate)); err != nil {
 		if cause := context.Cause(ctx); cause == nil || !errors.Is(err, cause) {
 			c.failCompletionLocked(execution, err)
@@ -237,7 +278,7 @@ func (c *Coordinator) completeEntry(ctx context.Context, execution *Execution, a
 	delete(c.active, execution.name)
 	c.clearCompletionFailureLocked(execution)
 	execution.cancel(nil)
-	if actionErr != nil {
+	if actionErr != nil && execution.stage == stageEnter {
 		c.liveErrors[execution.name] = actionErr
 		for _, active := range c.active {
 			active.cancel(actionErr)
@@ -245,6 +286,169 @@ func (c *Coordinator) completeEntry(ctx context.Context, execution *Execution, a
 	}
 	c.signalLocked()
 	return actionErr, true
+}
+
+func (c *Coordinator) stageCompleteLocked(status PhaseStatus, stage executionStage) bool {
+	switch stage {
+	case stageEnter:
+		return hasSuccessfulEntryEvidence(status)
+	case stageExit:
+		return status == PhaseExited || status == PhaseExitFailed
+	case stageRollback:
+		return status == PhasePending || status == PhaseEnterFailed || status == PhaseRolledBack || status == PhaseRollbackFailed
+	default:
+		return false
+	}
+}
+
+func (c *Coordinator) stageRunAllowedLocked(stage executionStage) bool {
+	switch stage {
+	case stageExit:
+		return c.snapshot.Status == RunRunning
+	case stageRollback:
+		return c.snapshot.Status == RunRollingBack
+	default:
+		return c.snapshot.Status == RunPending || c.snapshot.Status == RunRunning || c.snapshot.Status == RunRollingBack
+	}
+}
+
+func (c *Coordinator) stageReadyLocked(name string, status PhaseStatus, stage executionStage) bool {
+	switch stage {
+	case stageEnter:
+		return status == PhaseEntering || (status == PhasePending && c.dependenciesEnteredLocked(name))
+	case stageExit:
+		if status != PhaseEntered && status != PhaseExiting {
+			return false
+		}
+		for _, dependent := range c.dependentsLocked(name) {
+			status := c.snapshot.Phases[dependent].Status
+			if status != PhaseExited && status != PhaseExitFailed {
+				return false
+			}
+		}
+		return true
+	case stageRollback:
+		if status != PhaseEntered && status != PhaseRollingBack || hasStatus(c.snapshot, PhaseEntering) {
+			return false
+		}
+		for _, dependent := range c.dependentsLocked(name) {
+			status := c.snapshot.Phases[dependent].Status
+			if !rollbackCleanupResolved(status) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Coordinator) dependentsLocked(name string) []string {
+	dependents := make([]string, 0)
+	for _, level := range c.topology.levels {
+		for _, candidate := range level {
+			for _, dependency := range c.topology.phases[candidate].DependsOn {
+				if dependency == name {
+					dependents = append(dependents, candidate)
+				}
+			}
+		}
+	}
+	return dependents
+}
+
+func (c *Coordinator) terminalizeLocked(ctx context.Context, stage executionStage) (bool, error) {
+	status, terminal := terminalStatus(c.snapshot, stage)
+	if !terminal {
+		return false, nil
+	}
+	candidate := cloneSnapshot(c.snapshot)
+	candidate.Status = status
+	candidate.UpdatedAt = c.options.Clock()
+	if err := c.session.Save(ctx, cloneSnapshot(candidate)); err != nil {
+		if cause := context.Cause(ctx); cause == nil || !errors.Is(err, cause) {
+			c.failAdmissionLocked(err)
+		}
+		return false, err
+	}
+	c.snapshot = candidate
+	c.signalLocked()
+	return true, nil
+}
+
+func terminalStatus(snapshot Snapshot, stage executionStage) (RunStatus, bool) {
+	switch stage {
+	case stageExit:
+		if snapshot.Status != RunRunning || !allStatusesIn(snapshot, PhaseExited, PhaseExitFailed) {
+			return "", false
+		}
+		if hasStatus(snapshot, PhaseExitFailed) {
+			return RunFailed, true
+		}
+		return RunSucceeded, true
+	case stageRollback:
+		if snapshot.Status != RunRollingBack || hasStatus(snapshot, PhaseEntering) || !allStatusesIn(snapshot, PhasePending, PhaseEnterFailed, PhaseRolledBack, PhaseRollbackFailed) {
+			return "", false
+		}
+		if hasStatus(snapshot, PhaseRollbackFailed) {
+			return RunFailed, true
+		}
+		return RunRolledBack, true
+	default:
+		return "", false
+	}
+}
+
+func stageInProgress(stage executionStage) PhaseStatus {
+	switch stage {
+	case stageEnter:
+		return PhaseEntering
+	case stageExit:
+		return PhaseExiting
+	case stageRollback:
+		return PhaseRollingBack
+	default:
+		panic("unknown lifecycle stage")
+	}
+}
+
+func stageCompleted(stage executionStage) PhaseStatus {
+	switch stage {
+	case stageEnter:
+		return PhaseEntered
+	case stageExit:
+		return PhaseExited
+	case stageRollback:
+		return PhaseRolledBack
+	default:
+		panic("unknown lifecycle stage")
+	}
+}
+
+func stageFailed(stage executionStage) PhaseStatus {
+	switch stage {
+	case stageEnter:
+		return PhaseEnterFailed
+	case stageExit:
+		return PhaseExitFailed
+	case stageRollback:
+		return PhaseRollbackFailed
+	default:
+		panic("unknown lifecycle stage")
+	}
+}
+
+func (s executionStage) String() string {
+	switch s {
+	case stageEnter:
+		return "entry"
+	case stageExit:
+		return "exit"
+	case stageRollback:
+		return "rollback"
+	default:
+		return "unknown"
+	}
 }
 
 func (c *Coordinator) dependenciesEnteredLocked(name string) bool {
