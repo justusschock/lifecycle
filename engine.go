@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"time"
 
 	concurrency "github.com/justusschock/go-concurrency"
+
+	"github.com/justusschock/go-lifecycle/internal/nilcheck"
 )
 
 // Engine automatically drives a callback-bearing Plan through a durable
@@ -26,7 +27,7 @@ func NewEngine(plan *Plan, store Store, options Options) (*Engine, error) {
 	if plan.phases == nil || plan.levels == nil || plan.digest == "" || plan.topology == nil {
 		return nil, fmt.Errorf("%w: uninitialized plan", ErrInvalidPhase)
 	}
-	if isNilStore(store) {
+	if nilcheck.IsNil(store) {
 		return nil, fmt.Errorf("%w: nil store", ErrInvalidPhase)
 	}
 	if options.MaxParallel < 0 {
@@ -272,30 +273,4 @@ func (e *Engine) lexicalPhaseNames() []string {
 
 func isTerminal(status RunStatus) bool {
 	return status == RunSucceeded || status == RunRolledBack || status == RunFailed
-}
-
-func isNilStore(store Store) bool {
-	if store == nil {
-		return true
-	}
-	value := reflect.ValueOf(store)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
-}
-
-func isNilSession(session Session) bool {
-	if session == nil {
-		return true
-	}
-	value := reflect.ValueOf(session)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
 }

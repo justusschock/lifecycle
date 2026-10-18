@@ -3,9 +3,9 @@ package handoff
 import (
 	"context"
 	"fmt"
-	"reflect"
 
 	lifecycle "github.com/justusschock/go-lifecycle"
+	"github.com/justusschock/go-lifecycle/internal/nilcheck"
 )
 
 type Exporter[S any] interface {
@@ -28,13 +28,13 @@ type Protocol[S, D any] struct {
 }
 
 func NewProtocol[S, D any](exporter Exporter[S], transport Transport, adopter Adopter[D]) (*Protocol[S, D], error) {
-	if isNilCollaborator(exporter) {
+	if nilcheck.IsNil(exporter) {
 		return nil, fmt.Errorf("%w: nil exporter", lifecycle.ErrInvalidArtifact)
 	}
-	if isNilCollaborator(transport) {
+	if nilcheck.IsNil(transport) {
 		return nil, fmt.Errorf("%w: nil transport", lifecycle.ErrInvalidArtifact)
 	}
-	if isNilCollaborator(adopter) {
+	if nilcheck.IsNil(adopter) {
 		return nil, fmt.Errorf("%w: nil adopter", lifecycle.ErrInvalidArtifact)
 	}
 	return &Protocol[S, D]{exporter: exporter, transport: transport, adopter: adopter}, nil
@@ -79,17 +79,4 @@ func (p *Protocol[S, D]) Transfer(ctx context.Context, source S) (D, Receipt, er
 		return zero, receipt, fmt.Errorf("handoff adopt: %w", err)
 	}
 	return destination, receipt, nil
-}
-
-func isNilCollaborator(collaborator any) bool {
-	if collaborator == nil {
-		return true
-	}
-	value := reflect.ValueOf(collaborator)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
 }

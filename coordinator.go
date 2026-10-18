@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/justusschock/go-lifecycle/internal/nilcheck"
 )
 
 var errAdmissionPending = errors.New("lifecycle: phase admission pending")
@@ -43,7 +45,7 @@ func OpenCoordinator(ctx context.Context, topology *Topology, store Store, runID
 	if topology == nil || topology.phases == nil || topology.levels == nil || topology.digest == "" {
 		return nil, fmt.Errorf("%w: uninitialized topology", ErrInvalidPhase)
 	}
-	if isNilStore(store) {
+	if nilcheck.IsNil(store) {
 		return nil, fmt.Errorf("%w: nil store", ErrInvalidPhase)
 	}
 	if runID == "" {
@@ -63,7 +65,7 @@ func OpenCoordinator(ctx context.Context, topology *Topology, store Store, runID
 	if err != nil {
 		return nil, err
 	}
-	if isNilSession(session) {
+	if nilcheck.IsNil(session) {
 		return nil, fmt.Errorf("%w: store returned a nil session", ErrInvalidSnapshot)
 	}
 	if session.RunID() != runID {
