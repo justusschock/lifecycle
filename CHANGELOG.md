@@ -1,58 +1,42 @@
 # Changelog
 
-All notable changes to this project are documented in this file. The format
-is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
-project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-While the major version is 0, minor releases may contain breaking changes;
-they are listed here.
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+While the major version is `0`, a minor release may break the API.
 
 ## [Unreleased]
 
-Preparation for the first public release.
+## [0.1.0] - 2026-10-18
 
-### Changed
-
-- **Breaking:** the minimum Go version is now 1.25 (was 1.22), because the
-  tests use `testing/synctest` (ADR-0009).
-- Typed-nil detection shared by the root and `handoff` packages moved to
-  `internal/nilcheck`; `internal/` is not part of the API. No exported
-  identifier was removed: `Options.Clock` and the deprecated `PhaseFailed`
-  alias remain public (ADR-0008).
-- Concurrency tests run inside `testing/synctest` bubbles, so "still
-  blocked" assertions are deterministic and no test waits on real time.
-- CI runs on Go 1.25, `oldstable` and `stable` with the race detector and
-  golangci-lint, with every action pinned to a commit SHA; Dependabot keeps
-  modules and actions current.
+First public release.
 
 ### Added
 
-- Package documentation and doc comments for every exported identifier.
-- A runnable package example used as the README quick start.
-- `NOTICE`, `AGENTS.md`, a retrospective PRD and ADRs under `docs/`.
+- Validated phase graphs: `NewPlan` and the callback-free `NewTopology`
+  reject duplicates, unknown or self dependencies and cycles, and expose
+  stable topological `Levels` and a deterministic `Digest`.
+- `Engine`: automatic entry in dependency order, exit in reverse order,
+  rollback of entered phases after an entry failure, and bounded
+  parallelism through `Options.MaxParallel`.
+- `Coordinator` (`OpenCoordinator`): a caller-driven lifecycle with
+  `EnterPhase`, `ExitPhase`, `RollbackPhase` and an `Execution` that
+  durably records each outcome.
+- Durable, resumable runs: a `Snapshot` is saved before and after every
+  action through the fenced, exclusive `Store`/`Session` contract, and an
+  interrupted run resumes without repeating completed work.
+- Strict validation of loaded snapshots, including plan-change detection
+  (`ErrPlanChanged`).
+- Sentinel errors for `errors.Is`, such as `ErrCycle`, `ErrRunOwned`,
+  `ErrOwnershipLost` and `ErrIntegrity`.
+- Package `memory`: `memory.Store`, an in-memory reference store.
+- Package `handoff`: `Protocol.Transfer` runs export, send, receive and
+  adopt, with SHA-256 artifact identity (`NewArtifact`, `Validate`) checked
+  at every boundary.
+- Requirements and architecture decision records under `docs/`.
 
-## [0.2.0] - 2026-07-17
+Requires Go 1.25 or newer.
 
-### Added
-
-- `Topology`, `NewTopology` and `PhaseSpec`: a callback-free, validated
-  dependency graph shared with `Plan`.
-- `Coordinator`, `OpenCoordinator` and `Execution`: a caller-driven,
-  durable lifecycle state machine; `Engine` now drives runs through it.
-- Coordinator-driven exit, rollback and recovery.
-
-### Fixed
-
-- Exit is admitted only after every entry has resolved.
-- Coordinator recovery after transient persistence failures and retried
-  terminalization.
-
-## [0.1.0] - 2026-07-17
-
-### Added
-
-- Initial release: `Plan`, `Engine`, fenced `Store`/`Session` contract,
-  `memory.Store` and the `handoff` package.
-
-[Unreleased]: https://github.com/justusschock/lifecycle/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/justusschock/lifecycle/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/justusschock/lifecycle/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/justusschock/lifecycle/releases/tag/v0.1.0
