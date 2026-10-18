@@ -1,40 +1,154 @@
 # go-lifecycle
 
-`go-lifecycle` provides a restartable lifecycle engine for arbitrary directed
-acyclic graphs (DAGs) and a generic, integrity-checked handoff protocol. It is a
-private Go module intended for reuse across projects.
+`go-lifecycle` is a restartable lifecycle engine for Go. You describe phases
+with dependencies and idempotent enter, exit and rollback actions; the
+library validates the graph, runs independent phases concurrently, persists
+every action boundary, and resumes an interrupted run without repeating
+completed work. It is for services that start and stop dependent resources
+in order, for workflows that must survive crashes, and for tools that need
+DAG validation. A separate `handoff` package moves state between owners
+through integrity-checked artifacts.
 
-The engine validates lifecycle topology up front, executes independent phases
-with bounded concurrency, persists every action boundary, and recovers
-interrupted entry, exit, or rollback work without repeating completed actions.
-The `handoff` package composes export, transport, and adoption without adding
-resource-specific ownership semantics.
+## Features
 
-Module path: `github.com/justusschock/go-lifecycle`
+- DAG validation: duplicates, unknown or self dependencies and cycles are
+  rejected up front; stable topological levels and a deterministic digest.
+- Automatic `Engine`: entry in dependency order, exit in reverse order,
+  rollback of entered phases after an entry failure, bounded parallelism and
+  no level barriers.
+- Caller-driven `Coordinator` that tells you when a phase may run and
+  durably records the outcome.
+- Durable state: a snapshot is saved before and after every action through
+  a fenced, exclusive `Store`/`Session` contract; crashed runs resume exactly.
+- Strict validation of loaded snapshots, including detection of plan changes.
+- Deterministic, `errors.Is`-friendly error reporting.
+- `memory.Store`, an in-memory reference store.
+- `handoff.Protocol`: generic export → send → receive → adopt with SHA-256
+  content identity checked at every boundary.
 
-## Requirements and installation
+## Installation
 
-Go 1.22 or newer is required. The only non-standard dependency is
-[`github.com/justusschock/go-concurrency`](https://github.com/justusschock/go-concurrency),
-pinned to `v0.2.0`.
-
-Configure private-module access through normal GitHub authentication before
-installing the module. Do not put credentials in commands, source files, or Go
-environment settings.
-
-```bash
-go env -w GOPRIVATE='github.com/justusschock/*'
-go get github.com/justusschock/go-lifecycle@v0.2.0
+```sh
+go get github.com/justusschock/go-lifecycle@latest
 ```
 
-## Topology and direct coordination
+Requires Go 1.25 or newer. The only dependency outside the standard library
+is [`github.com/justusschock/go-concurrency`](https://github.com/justusschock/go-concurrency).
 
-`Topology` is the callback-free dependency graph. A `Coordinator` owns the
-fenced store session and durable lifecycle state for one run. It blocks
-`EnterPhase` until dependencies have durably entered and capacity is available;
-the returned `Execution` exposes a cancellation-aware `Context`, reports
-whether work is required through `ShouldRun`, and must be concluded with its
-durable `Complete` call.
+## Quick start
+
+The package example from [`example_test.go`](example_test.go) as a program:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	lifecycle "github.com/justusschock/go-lifecycle"
+	"github.com/justusschock/go-lifecycle/memory"
+)
+
+func main() {
+	step := func(message string) lifecycle.Action {
+		return func(context.Context) error {
+			fmt.Println(message)
+			return nil
+		}
+	}
+	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+		{Name: "storage", Enter: step("open storage"), Exit: step("close storage"), Rollback: step("discard storage")},
+		{Name: "workers", DependsOn: []string{"storage"}, Enter: step("start workers"), Exit: step("stop workers"), Rollback: step("discard workers")},
+		{Name: "http", DependsOn: []string{"workers"}, Enter: step("listen"), Exit: step("stop listening"), Rollback: step("discard listener")},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 2})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	snapshot, err := engine.Run(context.Background(), "server-1")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(snapshot.Status)
+}
+```
+
+Output:
+
+```text
+open storage
+start workers
+listen
+stop listening
+stop workers
+close storage
+succeeded
+```
+
+## Packages
+
+| Package | Purpose |
+|---|---|
+| [`github.com/justusschock/go-lifecycle`](https://pkg.go.dev/github.com/justusschock/go-lifecycle) | Plans, topologies, `Engine`, `Coordinator`, snapshots, the `Store`/`Session` contract and sentinel errors. |
+| [`github.com/justusschock/go-lifecycle/memory`](https://pkg.go.dev/github.com/justusschock/go-lifecycle/memory) | In-memory `Store` for tests and process-local workflows. |
+| [`github.com/justusschock/go-lifecycle/handoff`](https://pkg.go.dev/github.com/justusschock/go-lifecycle/handoff) | Integrity-checked artifacts and the generic transfer protocol. |
+
+Packages under `internal/` are not part of the API and may change in any
+release.
+
+## Usage
+
+### Plans and topologies
+
+A `Phase` has a unique name, zero or more dependencies and three idempotent
+actions (`Enter`, `Exit`, `Rollback`). `NewPlan` rejects empty names,
+duplicate phases, unknown, duplicate or self dependencies, nil actions and
+cycles. Input order does not matter: the plan computes stable topological
+levels and sorts phase names lexically within each level, so multiple roots,
+forks and joins need no special API. The plan owns copies of all dependency
+slices, and `Levels` returns fresh copies.
+
+`NewTopology` applies the same rules to callback-free `PhaseSpec` values.
+Use it to validate a graph for your own scheduler, or with a `Coordinator`.
+
+`Digest` is a deterministic SHA-256 digest of the phase names and sorted
+dependencies. Persisted runs record it to detect a changed plan. Actions are
+not part of the digest: if an action change is incompatible with existing
+snapshots, encode a version in the phase name or migrate the snapshots.
+
+### Running a lifecycle with Engine
+
+`Engine.Run` performs a complete lifecycle for one run ID:
+
+1. Admit lexically sorted phases whose dependencies have durably entered.
+2. Start a dependent as soon as its own dependencies finish, without waiting
+   for unrelated phases in the same level.
+3. After every entry succeeded, exit each phase once all of its dependents
+   have durably finished exiting (successfully or not).
+4. If an entry fails, durably move the run to `rolling_back`, cancel running
+   peers with the failure as cause, admit no new entries, and roll back the
+   successfully entered phases in reverse dependency order.
+
+At most `Options.MaxParallel` actions run at once; zero means 1 and negative
+values are rejected. Exit and rollback are best-effort: a failed cleanup
+action is recorded with a stage-specific status and does not stop cleanup of
+other phases. The run becomes `failed` once all cleanup has resolved. An
+exit failure does not trigger rollback.
+
+### Driving phases yourself with Coordinator
+
+A `Coordinator` owns the fenced session and durable state of one run.
+`EnterPhase` blocks until dependencies have durably entered and capacity is
+available. The returned `Execution` reports through `ShouldRun` whether the
+work still has to be done, exposes a cancellation-aware `Context`, and must
+be finished with `Complete`:
 
 ```go
 topology, err := lifecycle.NewTopology([]lifecycle.PhaseSpec{
@@ -55,138 +169,36 @@ if err != nil {
 	return err
 }
 if execution.ShouldRun() {
-	if err := prepare(execution.Context()); err != nil {
-		return execution.Complete(ctx, err)
-	}
-	if err := execution.Complete(ctx, nil); err != nil {
+	if err := execution.Complete(ctx, prepare(execution.Context())); err != nil {
 		return err
 	}
 }
 ```
 
-Direct users own the complete traversal: after all successful entries, call
-`ExitPhase` in reverse dependency order and complete each execution; after an
-entry failure, retry any durable `entering` work and call `RollbackPhase` in
-reverse dependency order. `ExitPhase` is intentionally unavailable until all
-entries have resolved, which keeps every persisted snapshot recoverable.
+Direct users own the traversal: after all entries succeed, call `ExitPhase`
+in reverse dependency order; after an entry failure, retry any durable
+`entering` work and call `RollbackPhase` in reverse dependency order.
+`ExitPhase` is unavailable until every entry has resolved, which keeps every
+persisted snapshot recoverable.
 
-## Lifecycle plans
+### Persistence and recovery
 
-A `Phase` has a unique name, zero or more named dependencies, and three
-idempotent actions:
+The engine saves a snapshot before every action (in-progress status,
+incremented `Attempts`) and after it (completed or stage-specific failure).
+The in-memory state advances only after `Save` succeeds: if the pre-action
+save fails, the action is not called; if a later save fails, the durable
+state stays restartable and `Run` returns the last durably saved snapshot
+with the error.
 
-```go
-type Phase struct {
-	Name       string
-	DependsOn  []string
-	Enter      lifecycle.Action
-	Exit       lifecycle.Action
-	Rollback   lifecycle.Action
-}
-```
+Actions must be idempotent: a process can crash after an action's side
+effects but before its completion is durable, so an in-progress action is
+retried when the run resumes. Completed actions are never repeated.
 
-`NewPlan` rejects empty names, duplicate phase names, missing dependencies,
-duplicate or self dependencies, nil actions, and cycles. Input order does not
-affect execution order: the plan computes stable topological levels, sorting
-phase names lexically within every level. This supports multiple roots,
-arbitrary forks, partial joins, repeated forks, and final joins without a
-special branching API.
-
-The plan owns copies of all dependency slices. `Levels` returns fresh copies, so
-callers cannot mutate the validated graph through either the original input or
-returned values.
-
-```go
-noop := func(context.Context) error { return nil }
-plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-	{Name: "prepare", Enter: noop, Exit: noop, Rollback: noop},
-	{Name: "left", DependsOn: []string{"prepare"}, Enter: noop, Exit: noop, Rollback: noop},
-	{Name: "right", DependsOn: []string{"prepare"}, Enter: noop, Exit: noop, Rollback: noop},
-	{Name: "publish", DependsOn: []string{"left", "right"}, Enter: noop, Exit: noop, Rollback: noop},
-})
-if err != nil {
-	return err
-}
-```
-
-### Plan digest
-
-`Plan.Digest` is a deterministic SHA-256 digest of canonical phase names and
-sorted dependency names. It detects topology changes when a persisted run is
-resumed with a different plan.
-
-Function values are deliberately excluded. Changing an action implementation
-without changing phase names or dependencies does not change the digest. If an
-action change is incompatible with existing snapshots, encode that version in
-the phase name or otherwise migrate the stored snapshots explicitly.
-
-## Running a lifecycle
-
-Create an engine with a validated plan, a snapshot store, and an optional
-parallelism limit:
-
-```go
-store := memory.NewStore()
-engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{
-	MaxParallel: 4,
-})
-if err != nil {
-	return err
-}
-
-snapshot, err := engine.Run(context.Background(), "deployment-42")
-if err != nil {
-	return err
-}
-fmt.Println(snapshot.Status) // succeeded
-```
-
-`Engine` is the automatic callback driver over the same Coordinator state
-machine. `Run` performs a complete lifecycle:
-
-1. Admit lexically sorted phases whose dependencies have durably entered.
-2. Start a dependent as soon as its own dependencies finish, without waiting
-   for unrelated phases in the same topological level.
-3. After successful entry, exit phases when all of their dependents have
-   durably resolved.
-4. If entry fails, atomically move the run to `rolling_back`, stop admitting
-   new entry work, and roll back successfully entered phases using the same
-   reverse-dependency readiness rule.
-
-At most `MaxParallel` callbacks run concurrently. Admission is lexical among
-the phases ready at each scheduling decision; error joins use stable
-topological-level and lexical order rather than callback completion order.
-`Plan.Levels` remains useful for graph introspection but is not an execution
-barrier.
-
-Exit and rollback are durable best-effort traversals. A failed cleanup action
-is recorded with stage-specific provenance and counts as resolved for admitting
-its ancestors, so it does not suppress cleanup of a sibling or dependency. The
-run becomes `failed` only after every eligible cleanup action is durably
-resolved. An exit failure does not synthesize a rollback.
-
-`MaxParallel` defaults to `1` when zero. Negative values are rejected. `Clock`
-defaults to `time.Now` and can be replaced for deterministic timestamps.
-`NewEngine` rejects nil or uninitialized plans and nil stores, including stores
-held in a typed nil interface. A canonical empty plan created by `NewPlan(nil)`
-is valid.
-
-## Persistence and recovery
-
-The engine saves a snapshot before and after every action. The pre-action save
-sets the in-progress status and increments `Attempts`; the post-action save
-records completion or a stage-specific failure. Store calls are serialized
-even while independent phase callbacks run concurrently.
-
-Actions must be idempotent. A process can crash after an action's side effects
-but before its completed status is durable, so an in-progress action is retried
-once the run resumes. Completed actions are not repeated.
-
-| Durable phase status | Recovery behavior |
+| Durable phase status | Recovery behaviour |
 | --- | --- |
 | `pending` | Run `Enter` when all dependencies are durably `entered`. |
 | `entering` | Retry `Enter`. |
-| `entered` | Skip `Enter`; later run `Exit`, or `Rollback` after entry failure. |
+| `entered` | Skip `Enter`; later run `Exit`, or `Rollback` after an entry failure. |
 | `enter_failed` | Preserve the entry failure while outstanding rollback completes. |
 | `exiting` | Retry `Exit`. |
 | `exited` | Skip `Enter` and `Exit`. |
@@ -195,35 +207,22 @@ once the run resumes. Completed actions are not repeated.
 | `rolled_back` | Skip `Rollback`. |
 | `rollback_failed` | Preserve the rollback failure and continue cleanup toward dependencies. |
 
-When a recovered run is already `rolling_back`, every durable `entering` phase
-is retried before rollback scheduling begins. Phases that durably become
-`entered` are then rolled back. Entry errors already recorded in the snapshot
-are returned again in deterministic order.
+A recovered run in `rolling_back` retries every durable `entering` phase
+before rollback begins. Loaded snapshots are validated before any action
+runs: run ID, plan digest, exact phase set, statuses, attempt counts, error
+text, reachable run state and dependency ordering. A plan mismatch returns
+`ErrPlanChanged` joined with `ErrInvalidSnapshot`; a terminal run
+(`succeeded`, `rolled_back`, `failed`) returns `ErrRunTerminal`.
 
-The in-memory runner commits a transition only after `Store.Save` succeeds. If
-persistence fails before an action, that action is not called. If persistence
-fails after an action, the durable phase remains in progress and is therefore
-restartable. The engine returns the persistence error and the last successfully
-saved snapshot without incorrectly advancing the run to a terminal state.
-
-Loaded snapshots are validated before any action runs: the requested run ID,
-plan digest, exact planned phase set, phase and run statuses, reachable run
-state, and terminal-state consistency must all agree. A `running` snapshot must
-contain an admitted phase. Every `rolling_back`, `rolled_back`, or
-rollback-derived `failed` snapshot must retain an `enter_failed` phase as the
-durable reason rollback began. A plan mismatch returns both
-`ErrInvalidSnapshot` and `ErrPlanChanged` through `errors.Is`. A `succeeded`
-snapshot is valid only when every phase is `exited`. Calling `Run` for a valid
-run already in `succeeded`, `rolled_back`, or `failed` state returns
-`ErrRunTerminal`.
+Each `PhaseState` records `Status`, `Attempts` (actions started across
+entry, exit and rollback), `LastError` (text of the last persisted action
+error) and `UpdatedAt` (time of the last transition, from `time.Now`).
 
 ### Store contract
 
-Implementations acquire a fenced, run-bound session:
-
 ```go
 type Store interface {
-	Acquire(context.Context, string) (lifecycle.Session, error)
+	Acquire(ctx context.Context, runID string) (lifecycle.Session, error)
 }
 
 type Session interface {
@@ -234,73 +233,44 @@ type Session interface {
 }
 ```
 
-`Acquire` must establish one exclusive owner for that run across every process
-using the backend. It returns `ErrRunOwned` while another owner is active. Each
-session carries a monotonically fenced ownership generation: after release or
-supersession, its operations—especially `Save`—must fail with
-`ErrOwnershipLost`. A session may load and save only its reported `RunID`; a
-cross-run snapshot is invalid.
+`Acquire` establishes one exclusive owner for the run across every process
+using the backend and returns `ErrRunOwned` while another owner is active.
+Each session carries a fencing generation: once released or superseded, its
+operations, especially `Save`, fail with `ErrOwnershipLost`. `Load` returns
+`ErrSnapshotNotFound` for a new run. `Save` atomically replaces the whole
+snapshot, acknowledges only once it is recoverable, and must not retain the
+caller's map. The engine releases with a context that is independent of the
+cancellation of `Run`, so cancelling an action does not strand ownership.
 
-The session fence protects ownership and persistence of lifecycle snapshots.
-It does not fence arbitrary external side effects from a callback after an
-external lease is superseded. Callbacks that mutate another system must also
-propagate and validate that system's fencing token, or enforce equivalent
-domain-level ownership.
+The fence protects snapshot writes, not external side effects. Callbacks
+that change another system must carry that system's own fencing token.
 
-`Session.Load` must return `ErrSnapshotNotFound` for an absent run. `Save` must
-atomically replace the complete snapshot and durably acknowledge only after the
-replacement is recoverable. Implementations must not retain or mutate
-caller-owned phase maps. The engine always releases with a context independent
-of cancellation of `Run`, so canceling an action does not strand ownership.
+`memory.Store` implements this contract in process: it clones snapshots at
+every boundary and fences stale sessions, and its zero value is ready to
+use. It is not durable and cannot coordinate separate processes; production
+backends need a lease or transaction and a durable fencing token.
+`Store.Load` and `Store.Save` are conveniences for inspecting and seeding a
+run that no session owns.
 
-Two concurrent calls for the same run do not serialize inside `Engine`: one
-owns the backend session and the other receives `ErrRunOwned`. This contract is
-part of `Store`; process-local engine mutexes are not sufficient for a durable
-or distributed implementation.
-
-`memory.NewStore` is a mutex-protected reference implementation. It clones phase
-maps on every boundary, fences stale sessions, and is useful for tests and
-process-local workflows. It is not durable and cannot coordinate separate
-processes. Production backends must implement the same session contract with a
-portable lease or transaction and durable fencing token.
-
-## Status and diagnostics
-
-`Snapshot` contains the run ID, plan digest, run status, per-phase state, and
-last update time. Each `PhaseState` records:
-
-- `Status`: the durable state-machine position;
-- `Attempts`: the number of actions started for that phase across entry, exit,
-  and rollback;
-- `LastError`: the most recently persisted action error text; and
-- `UpdatedAt`: the transition timestamp.
-
-Stable sentinel errors are exported from the root package:
+### Errors
 
 | Error | Meaning |
 | --- | --- |
-| `ErrInvalidPhase` | A phase, engine option, run ID, plan, or store is invalid. |
+| `ErrInvalidPhase` | A phase, option, run ID, plan, topology or store is invalid, or a stage operation is not available in the run's state. |
 | `ErrDuplicatePhase` | More than one phase uses the same name. |
-| `ErrUnknownDependency` | A dependency name is absent from the plan. |
+| `ErrUnknownDependency` | A dependency name is not in the plan. |
+| `ErrDependencyFailed` | A phase cannot enter because a dependency failed entry; joined with that failure. |
 | `ErrCycle` | The graph contains a cycle or self-dependency. |
-| `ErrSnapshotNotFound` | A store has no snapshot for the requested run. |
-| `ErrInvalidSnapshot` | A loaded snapshot or run-bound save violates the lifecycle state contract. |
-| `ErrPlanChanged` | A snapshot's digest differs from the supplied plan; also matches `ErrInvalidSnapshot`. |
-| `ErrRunTerminal` | The requested run has already reached a terminal state. |
-| `ErrRunOwned` | Another session exclusively owns the requested run. |
-| `ErrOwnershipLost` | A released or superseded session attempted an operation. |
-| `ErrInvalidArtifact` | A handoff artifact, receipt, or protocol collaborator is structurally invalid. |
-| `ErrIntegrity` | Artifact data, digest, ID, or receipt identity does not agree. |
+| `ErrSnapshotNotFound` | The store has no snapshot for the run. |
+| `ErrInvalidSnapshot` | A loaded or saved snapshot violates the lifecycle state contract. |
+| `ErrPlanChanged` | A snapshot's digest differs from the plan; also matches `ErrInvalidSnapshot`. |
+| `ErrRunTerminal` | The run has already reached a terminal state. |
+| `ErrRunOwned` | Another session owns the run. |
+| `ErrOwnershipLost` | A released or superseded session, or a closed `Coordinator`, was used. |
+| `ErrInvalidArtifact` | A handoff artifact, receipt or collaborator is structurally invalid. |
+| `ErrIntegrity` | Artifact data, digest, ID or receipt identity do not agree. |
 
-Use `errors.Is`, because action, rollback, handoff-stage, and persistence errors
-may be wrapped or joined. A live action error preserves its Go error identity.
-After a restart, only the persisted `LastError` string is available, so the
-reconstructed error preserves text and deterministic ordering but cannot
-preserve the original value's `errors.Is` identity.
-
-## Generic handoff
-
-The `handoff` subpackage moves generic state through three explicit roles:
+### Handoff
 
 ```go
 type Exporter[S any] interface {
@@ -317,27 +287,21 @@ type Adopter[D any] interface {
 }
 ```
 
-`Protocol.Transfer` performs `Export` → `Send` → `Receive` → `Adopt`. It
-validates the artifact after export and receive, validates receipt fields, and
-requires the exported artifact, receipt, and received artifact IDs to match.
-Adoption is never called after an integrity failure.
+`Protocol.Transfer` runs `Export` → `Send` → `Receive` → `Adopt`. It
+validates the artifact after export and after receive, checks the receipt,
+and requires the exported, receipt and received artifact IDs to match.
+`Adopt` is never called after an integrity failure. Errors are wrapped with
+`handoff export`, `handoff send`, `handoff receive` or `handoff adopt`.
 
-Artifacts use a canonical SHA-256 semantic-envelope digest as both their digest
-and hex-encoded ID. The canonical input length-prefixes media type, version,
-data, metadata count, and metadata keys and values sorted by key. Changing any
-of those fields therefore changes identity, while Go map iteration order does
-not. `NewArtifact`, `Clone`, and the protocol copy byte slices and metadata maps
-at every boundary so collaborators do not share mutable backing storage. Since
-artifact fields are exported, callers that modify an artifact must call
-`Validate` before trusting or forwarding it.
+An artifact's `Digest` is SHA-256 over a canonical, length-prefixed envelope
+of media type, version, data and metadata sorted by key; `ID` is its hex
+encoding. `NewArtifact`, `Clone` and the protocol copy byte slices and maps
+at every boundary. Because artifact fields are exported, call `Validate`
+after modifying one.
 
 ```go
-artifact, err := handoff.NewArtifact(
-	"application/octet-stream",
-	1,
-	[]byte("state"),
-	map[string]string{"schema": "example/v1"},
-)
+artifact, err := handoff.NewArtifact("application/octet-stream", 1, []byte("state"),
+	map[string]string{"schema": "example/v1"})
 if err != nil {
 	return err
 }
@@ -346,54 +310,43 @@ if err := artifact.Validate(); err != nil {
 }
 ```
 
-`NewProtocol` rejects nil collaborators, including typed nil interfaces.
-Transfer errors are wrapped with `handoff export`, `handoff send`, `handoff
-receive`, or `handoff adopt`, while preserving the underlying error for
-`errors.Is`.
+## Design and guarantees
 
-This protocol transfers generic lifecycle artifacts. Leasing or transferring a
-finite resource right is deliberately excluded and belongs in
-`go-resources/handoff`.
+- **Concurrency.** `Plan`, `Topology`, `Engine`, `Coordinator`, `Execution`,
+  `memory.Store` and `handoff.Protocol` (given safe collaborators) are safe
+  for concurrent use. Store calls for one run are serialised. Two concurrent
+  `Run` calls for the same run do not queue: one owns the run and the other
+  gets `ErrRunOwned`.
+- **Cancellation.** Blocking calls honour their context and return its
+  cause. Running actions receive a context that is cancelled with the cause
+  of an entry failure, a persistence failure or `Coordinator.Close`.
+- **Errors.** Use `errors.Is`: errors are wrapped and joined. Joined errors
+  are ordered by topological level, then by phase name. Live action errors
+  keep their identity; errors recovered after a restart keep only their
+  persisted text.
+- **No logging, no global state.** Results are reported through return
+  values only.
+- **Not provided:** a workflow DSL, timers or schedules, a durable store,
+  retries beyond restart recovery, inferred compensation, domain-specific
+  states, artifact encryption or transport, or panic recovery for callbacks.
+  Callers own action idempotency, store selection and retry policy.
+- **Stability.** The module is at `v0.x`: minor releases may break the API.
+  Every break is listed in [CHANGELOG.md](CHANGELOG.md).
 
-## Scope and non-goals
+## Documentation
 
-This release intentionally does not provide:
+- API reference: [pkg.go.dev/github.com/justusschock/go-lifecycle](https://pkg.go.dev/github.com/justusschock/go-lifecycle)
+- Requirements and design decisions: [docs/README.md](docs/README.md)
+- Changes: [CHANGELOG.md](CHANGELOG.md)
 
-- a workflow DSL, timers, schedules, or long-running orchestration;
-- a durable or distributed `Store` implementation (the interface nevertheless
-  requires exclusive fenced sessions from one);
-- retries beyond restart recovery of interrupted idempotent actions;
-- synthesized compensation or inferred rollback actions;
-- domain-specific lifecycle states or resource ownership semantics;
-- artifact encryption, authentication, storage, or transport implementations;
-  or
-- panic recovery for user callbacks.
+## Contributing
 
-Callers own action idempotency, durable-store selection, context lifetimes,
-domain-specific adapters, security policy, and retry policy around terminal
-failures.
-
-## Development
-
-Run formatting, static analysis, race tests, and repository hooks with Go 1.26
-or newer:
-
-```bash
-gofmt -w *.go memory/*.go handoff/*.go
-go vet ./...
-go test -race ./...
-pre-commit run --all-files
-```
-
-The dependency graph should contain only this module and `go-concurrency`:
-
-```bash
-go list -m all
-```
-
-Local implementation plans live under `docs/`; implementation reports live
-under `.superpowers/`. Both are intentionally excluded from Git.
+Contributions are made through pull requests against `main`; nothing is
+pushed to `main` directly. Read [AGENTS.md](AGENTS.md) first: it covers the
+docs-first process, API rules, testing requirements and the checks to run
+before opening a pull request.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).

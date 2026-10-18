@@ -8,6 +8,44 @@ import (
 	"github.com/justusschock/go-lifecycle/memory"
 )
 
+// Example starts three dependent phases in order and stops them in reverse.
+func Example() {
+	step := func(message string) lifecycle.Action {
+		return func(context.Context) error {
+			fmt.Println(message)
+			return nil
+		}
+	}
+	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+		{Name: "storage", Enter: step("open storage"), Exit: step("close storage"), Rollback: step("discard storage")},
+		{Name: "workers", DependsOn: []string{"storage"}, Enter: step("start workers"), Exit: step("stop workers"), Rollback: step("discard workers")},
+		{Name: "http", DependsOn: []string{"workers"}, Enter: step("listen"), Exit: step("stop listening"), Rollback: step("discard listener")},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 2})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	snapshot, err := engine.Run(context.Background(), "server-1")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(snapshot.Status)
+	// Output:
+	// open storage
+	// start workers
+	// listen
+	// stop listening
+	// stop workers
+	// close storage
+	// succeeded
+}
+
 func ExampleEngine() {
 	noop := func(context.Context) error { return nil }
 	plan, _ := lifecycle.NewPlan([]lifecycle.Phase{
