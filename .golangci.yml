@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  # The standard set (errcheck, govet, ineffassign, staticcheck, unused) plus
+  # linters that catch error-handling and spelling mistakes.
+  default: standard
+  enable:
+    - errorlint
+    - misspell
+  # bodyclose is not enabled: the module performs no HTTP I/O.
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/justusschock/go-lifecycle

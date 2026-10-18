@@ -28,7 +28,7 @@ func ExampleCoordinator_EnterPhase() {
 		{Name: "child", DependsOn: []string{"root"}},
 	})
 	coordinator, _ := lifecycle.OpenCoordinator(context.Background(), topology, memory.NewStore(), "example", lifecycle.Options{})
-	defer coordinator.Close(context.Background())
+	defer func() { _ = coordinator.Close(context.Background()) }()
 
 	childResult := make(chan *lifecycle.Execution, 1)
 	go func() {

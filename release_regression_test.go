@@ -118,8 +118,7 @@ func TestEngineSchedulesNewlyReadyPhasesWithoutLevelBarrier(t *testing.T) {
 		case <-childStarted:
 		default:
 			close(releaseRight)
-			<-done
-			t.Fatal("child waited for an unrelated root")
+			t.Fatalf("child waited for an unrelated root (run error: %v)", <-done)
 		}
 		close(releaseRight)
 		if err := <-done; err != nil {
@@ -242,8 +241,7 @@ func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
 			case <-leftRootStarted:
 			default:
 				close(releaseRight)
-				<-done
-				t.Fatal("left root exit waited for unrelated right leaf")
+				t.Fatalf("left root exit waited for unrelated right leaf (run error: %v)", <-done)
 			}
 			close(releaseRight)
 			if err := <-done; err != nil {
@@ -289,8 +287,7 @@ func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
 			case <-leftRootRollbackStarted:
 			default:
 				close(releaseRightRollback)
-				<-done
-				t.Fatal("left root rollback waited for unrelated right leaf")
+				t.Fatalf("left root rollback waited for unrelated right leaf (run error: %v)", <-done)
 			}
 			close(releaseRightRollback)
 			if err := <-done; !errors.Is(err, entryFailure) {

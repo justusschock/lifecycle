@@ -30,7 +30,11 @@ func TestAdversarialEntryReadinessAfterDurableRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer coordinator.Close(context.Background())
+	defer func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err := coordinator.EnterPhase(context.Background(), "child"); err == nil {
 		t.Fatalf("child admitted after run durably entered %q", snapshot.Status)
 	}
@@ -59,7 +63,11 @@ func TestAdversarialAtomicEntryAdmissionAfterDurableRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer coordinator.Close(context.Background())
+	defer func() {
+		if err := coordinator.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err := coordinator.EnterPhase(context.Background(), "child"); err == nil {
 		t.Fatal("entry admitted after run durably entered rollback")
 	}

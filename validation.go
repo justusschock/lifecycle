@@ -99,10 +99,6 @@ func validatePhaseState(name string, state PhaseState) error {
 	return nil
 }
 
-func validateDependencyOrdering(plan *Plan, snapshot Snapshot) error {
-	return validateTopologyDependencyOrdering(plan.topology, snapshot)
-}
-
 func validateTopologyDependencyOrdering(topology *Topology, snapshot Snapshot) error {
 	for _, level := range topology.levels {
 		for _, name := range level {

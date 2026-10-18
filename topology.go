@@ -125,11 +125,11 @@ func digestTopology(phases map[string]PhaseSpec) string {
 	slices.Sort(names)
 
 	hash := sha256.New()
-	fmt.Fprintf(hash, "%d:", len(names))
+	_, _ = fmt.Fprintf(hash, "%d:", len(names))
 	for _, name := range names {
 		writeDigestField(hash, name)
 		dependencies := phases[name].DependsOn
-		fmt.Fprintf(hash, "%d:", len(dependencies))
+		_, _ = fmt.Fprintf(hash, "%d:", len(dependencies))
 		for _, dependency := range dependencies {
 			writeDigestField(hash, dependency)
 		}
@@ -142,5 +142,5 @@ type digestWriter interface {
 }
 
 func writeDigestField(writer digestWriter, value string) {
-	fmt.Fprintf(writer, "%d:%s", len(value), value)
+	_, _ = fmt.Fprintf(writer, "%d:%s", len(value), value)
 }
