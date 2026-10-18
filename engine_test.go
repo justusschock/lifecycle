@@ -15,6 +15,7 @@ import (
 	"github.com/justusschock/go-lifecycle/memory"
 )
 
+// FR-LIFE-07
 func TestEngineRunsBranchesTogetherAndJoinsBeforeReverseExit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		branchEntered := make(chan string, 2)
@@ -118,6 +119,7 @@ func TestEngineRunsBranchesTogetherAndJoinsBeforeReverseExit(t *testing.T) {
 	})
 }
 
+// FR-LIFE-05
 func TestEngineRunsArbitraryDAGInDependencyOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dependencies := map[string][]string{
@@ -204,6 +206,7 @@ func TestEngineRunsArbitraryDAGInDependencyOrder(t *testing.T) {
 	})
 }
 
+// FR-LIFE-08
 func TestEngineCancelsFailingLevelAndRollsBackOnlyEnteredPhases(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		want := errors.New("branch failed")
@@ -288,6 +291,7 @@ func TestEngineCancelsFailingLevelAndRollsBackOnlyEnteredPhases(t *testing.T) {
 	})
 }
 
+// FR-LIFE-09
 func TestEngineAttemptsEveryEnteredRollbackAfterRollbackFailure(t *testing.T) {
 	entryFailure := errors.New("entry failed")
 	rollbackFailure := errors.New("rollback failed")
@@ -343,6 +347,7 @@ func TestEngineAttemptsEveryEnteredRollbackAfterRollbackFailure(t *testing.T) {
 	}
 }
 
+// FR-LIFE-10
 func TestEnginePersistsEnteringBeforeCallingAction(t *testing.T) {
 	store := newRecordingStore()
 	var callbackSaw lifecycle.PhaseStatus
@@ -373,6 +378,7 @@ func TestEnginePersistsEnteringBeforeCallingAction(t *testing.T) {
 	}
 }
 
+// FR-LIFE-10
 func TestEngineReturnsPreActionStoreFailureWithoutRunningAction(t *testing.T) {
 	want := errors.New("store unavailable")
 	store := newRecordingStore()
@@ -399,6 +405,7 @@ func TestEngineReturnsPreActionStoreFailureWithoutRunningAction(t *testing.T) {
 	}
 }
 
+// FR-LIFE-10
 func TestEngineLeavesInterruptedActionsRestartableAfterTerminalSaveFailure(t *testing.T) {
 	t.Run("enter", func(t *testing.T) {
 		want := errors.New("entered status save failed")
@@ -493,6 +500,7 @@ func TestEngineLeavesInterruptedActionsRestartableAfterTerminalSaveFailure(t *te
 	})
 }
 
+// FR-LIFE-10
 func TestEngineDoesNotExposeFailedRunStatusSaveAsCurrent(t *testing.T) {
 	want := errors.New("final status save failed")
 	store := newRecordingStore()
@@ -517,6 +525,7 @@ func TestEngineDoesNotExposeFailedRunStatusSaveAsCurrent(t *testing.T) {
 	}
 }
 
+// FR-LIFE-10
 func TestEngineLeavesExitFailureNonterminalUntilFinalStatusIsDurable(t *testing.T) {
 	actionFailure := errors.New("exit failed")
 	statusSaveFailure := errors.New("status save failed")
@@ -559,6 +568,7 @@ func TestEngineLeavesExitFailureNonterminalUntilFinalStatusIsDurable(t *testing.
 	}
 }
 
+// FR-LIFE-11
 func TestEngineDoesNotRepeatCompletedEntryAfterRestart(t *testing.T) {
 	var completedCalls atomic.Int32
 	var retriedCalls atomic.Int32
@@ -600,6 +610,7 @@ func TestEngineDoesNotRepeatCompletedEntryAfterRestart(t *testing.T) {
 	}
 }
 
+// FR-LIFE-11
 func TestEngineRetriesInterruptedExitAndRollback(t *testing.T) {
 	t.Run("exit", func(t *testing.T) {
 		var enterCalls atomic.Int32
@@ -656,6 +667,7 @@ func TestEngineRetriesInterruptedExitAndRollback(t *testing.T) {
 	})
 }
 
+// FR-LIFE-12
 func TestEngineRejectsChangedPlanAndTerminalRunBeforeActions(t *testing.T) {
 	var calls atomic.Int32
 	plan := singlePhasePlan(t, "phase", func(context.Context) error { calls.Add(1); return nil }, func(context.Context) error { calls.Add(1); return nil }, func(context.Context) error { calls.Add(1); return nil })
@@ -689,6 +701,7 @@ func TestEngineRejectsChangedPlanAndTerminalRunBeforeActions(t *testing.T) {
 	}
 }
 
+// FR-LIFE-14
 func TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder(t *testing.T) {
 	var calls atomic.Int32
 	noop := func(context.Context) error { calls.Add(1); return nil }
@@ -719,6 +732,7 @@ func TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder(t *testing.T) {
 	}
 }
 
+// FR-LIFE-04
 func TestEngineRejectsInvalidConstructionAndRunID(t *testing.T) {
 	plan := singlePhasePlan(t, "phase", func(context.Context) error { return nil }, func(context.Context) error { return nil }, func(context.Context) error { return nil })
 	if _, err := lifecycle.NewEngine(nil, memory.NewStore(), lifecycle.Options{}); err == nil {

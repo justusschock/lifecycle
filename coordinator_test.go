@@ -15,6 +15,7 @@ type coordinatorResult struct {
 	err       error
 }
 
+// FR-LIFE-05
 func TestCoordinatorBlocksUntilDependenciesDurablyComplete(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		topology := coordinatorTopology(t,
@@ -48,6 +49,7 @@ func TestCoordinatorBlocksUntilDependenciesDurablyComplete(t *testing.T) {
 	})
 }
 
+// FR-LIFE-05
 func TestCoordinatorAdmitsSiblingsAndBlocksJoin(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		topology := coordinatorTopology(t,
@@ -76,6 +78,7 @@ func TestCoordinatorAdmitsSiblingsAndBlocksJoin(t *testing.T) {
 	})
 }
 
+// FR-LIFE-06
 func TestCoordinatorEnforcesMaxParallel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		topology := coordinatorTopology(t,
@@ -105,6 +108,7 @@ func TestCoordinatorEnforcesMaxParallel(t *testing.T) {
 	})
 }
 
+// FR-LIFE-15
 func TestCoordinatorPreventsDuplicateConcurrentExecution(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
@@ -126,6 +130,7 @@ func TestCoordinatorPreventsDuplicateConcurrentExecution(t *testing.T) {
 	})
 }
 
+// FR-LIFE-11
 func TestCoordinatorSkipsCompletedEntryAfterRestart(t *testing.T) {
 	store := memory.NewStore()
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
@@ -144,6 +149,7 @@ func TestCoordinatorSkipsCompletedEntryAfterRestart(t *testing.T) {
 	}
 }
 
+// FR-LIFE-11
 func TestCoordinatorRetriesInterruptedEntryAfterRestart(t *testing.T) {
 	store := memory.NewStore()
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
@@ -165,6 +171,7 @@ func TestCoordinatorRetriesInterruptedEntryAfterRestart(t *testing.T) {
 	completePhase(t, execution, nil)
 }
 
+// FR-LIFE-08
 func TestCoordinatorEntryFailureCancelsPeersAndWakesDependents(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		failure := errors.New("entry failed")
@@ -202,6 +209,7 @@ func TestCoordinatorEntryFailureCancelsPeersAndWakesDependents(t *testing.T) {
 	})
 }
 
+// FR-LIFE-10
 func TestCoordinatorPersistenceFailureStopsAdmission(t *testing.T) {
 	failure := errors.New("save failed")
 	store := newRecordingStore()
@@ -222,6 +230,7 @@ func TestCoordinatorPersistenceFailureStopsAdmission(t *testing.T) {
 	}
 }
 
+// FR-LIFE-15
 func TestCoordinatorCanceledAdmissionDoesNotStopLaterAdmission(t *testing.T) {
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
 	coordinator := openCoordinator(t, topology, memory.NewStore(), "canceled-admission", lifecycle.Options{})
@@ -235,6 +244,7 @@ func TestCoordinatorCanceledAdmissionDoesNotStopLaterAdmission(t *testing.T) {
 	completePhase(t, enterPhase(t, coordinator, "phase"), nil)
 }
 
+// FR-LIFE-10
 func TestCoordinatorCompletionRetryRestoresAdmission(t *testing.T) {
 	failure := errors.New("save failed")
 	store := newRecordingStore()
@@ -257,6 +267,7 @@ func TestCoordinatorCompletionRetryRestoresAdmission(t *testing.T) {
 	completePhase(t, enterPhase(t, coordinator, "child"), nil)
 }
 
+// FR-LIFE-13
 func TestCoordinatorCloseReleasesOwnershipAfterCancellation(t *testing.T) {
 	store := memory.NewStore()
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
@@ -271,6 +282,7 @@ func TestCoordinatorCloseReleasesOwnershipAfterCancellation(t *testing.T) {
 	closeCoordinator(t, reopened)
 }
 
+// FR-LIFE-13
 func TestCoordinatorCloseRetriesFailedRelease(t *testing.T) {
 	store := memory.NewStore()
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
@@ -289,6 +301,7 @@ func TestCoordinatorCloseRetriesFailedRelease(t *testing.T) {
 	closeCoordinator(t, reopened)
 }
 
+// FR-LIFE-07
 func TestCoordinatorExitsInReverseDependencyOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		topology := coordinatorTopology(t,
@@ -310,6 +323,7 @@ func TestCoordinatorExitsInReverseDependencyOrder(t *testing.T) {
 	})
 }
 
+// FR-LIFE-08
 func TestCoordinatorRollsBackEnteredPhasesInReverseDependencyOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		failure := errors.New("entry failed")
@@ -336,6 +350,7 @@ func TestCoordinatorRollsBackEnteredPhasesInReverseDependencyOrder(t *testing.T)
 	})
 }
 
+// FR-LIFE-09
 func TestCoordinatorCleanupFailureDoesNotSuppressAncestors(t *testing.T) {
 	failure := errors.New("exit failed")
 	topology := coordinatorTopology(t,
@@ -361,6 +376,7 @@ func TestCoordinatorCleanupFailureDoesNotSuppressAncestors(t *testing.T) {
 	}
 }
 
+// FR-LIFE-11
 func TestCoordinatorRetriesInterruptedExitAndRollback(t *testing.T) {
 	exitTopology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
 
@@ -397,6 +413,7 @@ func TestCoordinatorRetriesInterruptedExitAndRollback(t *testing.T) {
 	closeCoordinator(t, rollbackRestart)
 }
 
+// FR-LIFE-11
 func TestCoordinatorRollbackRetriesEnteringBeforeCleanup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		failure := errors.New("entry failed")
@@ -428,6 +445,7 @@ func TestCoordinatorRollbackRetriesEnteringBeforeCleanup(t *testing.T) {
 	})
 }
 
+// FR-LIFE-15
 func TestCoordinatorRejectsStageOperationsInInvalidRunState(t *testing.T) {
 	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
 	coordinator := openCoordinator(t, topology, memory.NewStore(), "invalid-stage", lifecycle.Options{})
@@ -440,6 +458,7 @@ func TestCoordinatorRejectsStageOperationsInInvalidRunState(t *testing.T) {
 	}
 }
 
+// FR-LIFE-07
 func TestCoordinatorRejectsExitUntilAllEntriesResolve(t *testing.T) {
 	topology := coordinatorTopology(t,
 		lifecycle.PhaseSpec{Name: "entered"},
@@ -454,6 +473,7 @@ func TestCoordinatorRejectsExitUntilAllEntriesResolve(t *testing.T) {
 	}
 }
 
+// FR-LIFE-10
 func TestCoordinatorRetriesTerminalizationAfterSaveFailure(t *testing.T) {
 	failure := errors.New("terminal save failed")
 	store := newRecordingStore()

@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// FR-LIFE-02
 func TestTopologyBuildsStableImmutableDAG(t *testing.T) {
 	dependencies := []string{"right", "left"}
 	topology, err := NewTopology([]PhaseSpec{
@@ -44,6 +45,7 @@ func TestTopologyBuildsStableImmutableDAG(t *testing.T) {
 	}
 }
 
+// FR-LIFE-03
 func TestTopologyAndPlanShareDigest(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	topology, err := NewTopology([]PhaseSpec{
@@ -65,6 +67,7 @@ func TestTopologyAndPlanShareDigest(t *testing.T) {
 	}
 }
 
+// FR-LIFE-01
 func TestTopologyRejectsInvalidGraphs(t *testing.T) {
 	tests := []struct {
 		name   string

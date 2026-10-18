@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// FR-LIFE-12
 func TestSnapshotRejectsImpossiblePhaseStateCountersAndErrors(t *testing.T) {
 	plan := validationSinglePhasePlan(t)
 	tests := []struct {
@@ -45,6 +46,7 @@ func TestSnapshotRejectsImpossiblePhaseStateCountersAndErrors(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotAcceptsNaturalPhaseStateCrashBoundaries(t *testing.T) {
 	plan := validationSinglePhasePlan(t)
 	tests := []struct {
@@ -76,6 +78,7 @@ func TestSnapshotAcceptsNaturalPhaseStateCrashBoundaries(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotRejectsUnreachableRunStates(t *testing.T) {
 	emptyPlan, err := NewPlan(nil)
 	if err != nil {
@@ -129,6 +132,7 @@ func TestSnapshotRejectsUnreachableRunStates(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotAcceptsReachableRollbackProvenance(t *testing.T) {
 	plan := validationIndependentPlan(t, "failed", "cleanup")
 	tests := []struct {
@@ -155,6 +159,7 @@ func TestSnapshotAcceptsReachableRollbackProvenance(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotAcceptsCanonicalEmptyPendingState(t *testing.T) {
 	plan, err := NewPlan(nil)
 	if err != nil {
@@ -166,6 +171,7 @@ func TestSnapshotAcceptsCanonicalEmptyPendingState(t *testing.T) {
 	}
 }
 
+// FR-LIFE-04
 func TestNewEngineRejectsUninitializedPlanAndAcceptsCanonicalEmptyPlan(t *testing.T) {
 	if _, err := NewEngine(&Plan{}, &adversarialStore{}, Options{}); !errors.Is(err, ErrInvalidPhase) {
 		t.Fatalf("NewEngine(&Plan{}) = %v, want %v", err, ErrInvalidPhase)
@@ -179,6 +185,7 @@ func TestNewEngineRejectsUninitializedPlanAndAcceptsCanonicalEmptyPlan(t *testin
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotRejectsImpossibleDependencyAndCleanupOrdering(t *testing.T) {
 	plan := validationParentChildPlan(t)
 	tests := []struct {
@@ -246,6 +253,7 @@ func TestSnapshotRejectsImpossibleDependencyAndCleanupOrdering(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotAcceptsDependencyOrderedCrashBoundaries(t *testing.T) {
 	plan := validationParentChildPlan(t)
 	tests := []struct {
@@ -303,6 +311,7 @@ func TestSnapshotAcceptsDependencyOrderedCrashBoundaries(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestSnapshotRejectsRollbackCleanupWhileEntryRemainsInProgress(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan, err := NewPlan([]Phase{

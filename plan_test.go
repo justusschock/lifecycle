@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// FR-LIFE-02
 func TestPlanBuildsStableBranchAndJoinLevels(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan, err := NewPlan([]Phase{
@@ -36,6 +37,7 @@ func TestPlanBuildsStableBranchAndJoinLevels(t *testing.T) {
 	}
 }
 
+// FR-LIFE-01
 func TestPlanRejectsInvalidGraphs(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	tests := []struct {
@@ -105,6 +107,7 @@ func TestPlanRejectsInvalidGraphs(t *testing.T) {
 	}
 }
 
+// FR-LIFE-02
 func TestPlanOwnsItsGraphData(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	dependencies := []string{"root"}

@@ -10,6 +10,7 @@ import (
 	"github.com/justusschock/go-lifecycle/memory"
 )
 
+// FR-LIFE-17
 func TestStoreReturnsNotFoundAndCopiesSnapshots(t *testing.T) {
 	store := memory.NewStore()
 	if _, err := store.Load(context.Background(), "missing"); !errors.Is(err, lifecycle.ErrSnapshotNotFound) {

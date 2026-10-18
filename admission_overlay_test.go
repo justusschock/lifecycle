@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// FR-LIFE-08
 func TestAdversarialEntryReadinessAfterDurableRollback(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan, err := NewPlan([]Phase{
@@ -43,6 +44,7 @@ func TestAdversarialEntryReadinessAfterDurableRollback(t *testing.T) {
 	}
 }
 
+// FR-LIFE-08
 func TestAdversarialAtomicEntryAdmissionAfterDurableRollback(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan, err := NewPlan([]Phase{
@@ -79,6 +81,7 @@ func TestAdversarialAtomicEntryAdmissionAfterDurableRollback(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestAdversarialSnapshotDependencyConsistency(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan, err := NewPlan([]Phase{
@@ -120,6 +123,7 @@ func TestAdversarialSnapshotDependencyConsistency(t *testing.T) {
 	}
 }
 
+// FR-LIFE-12
 func TestAdversarialSnapshotPhaseStateConsistency(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan, err := NewPlan([]Phase{{Name: "phase", Enter: noop, Exit: noop, Rollback: noop}})

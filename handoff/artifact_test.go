@@ -8,6 +8,7 @@ import (
 	lifecycle "github.com/justusschock/go-lifecycle"
 )
 
+// FR-LIFE-18
 func TestNewArtifactCopiesInputsAndComputesStableIdentity(t *testing.T) {
 	data := []byte("state")
 	metadata := map[string]string{"owner": "source"}
@@ -40,6 +41,7 @@ func TestNewArtifactCopiesInputsAndComputesStableIdentity(t *testing.T) {
 	}
 }
 
+// FR-LIFE-18
 func TestArtifactIdentityCommitsToCanonicalSemanticEnvelope(t *testing.T) {
 	first, err := NewArtifact("application/example", 7, []byte("state"), map[string]string{"z": "last", "a": "first"})
 	if err != nil {
@@ -79,6 +81,7 @@ func TestArtifactIdentityCommitsToCanonicalSemanticEnvelope(t *testing.T) {
 	}
 }
 
+// FR-LIFE-18
 func TestArtifactRejectsInvalidFieldsAndTampering(t *testing.T) {
 	for _, test := range []struct {
 		name      string

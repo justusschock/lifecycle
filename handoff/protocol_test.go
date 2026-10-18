@@ -11,6 +11,7 @@ import (
 	lifecycle "github.com/justusschock/go-lifecycle"
 )
 
+// FR-LIFE-19
 func TestProtocolTransfersInOrderAcrossCopyBoundaries(t *testing.T) {
 	var order []string
 	var exported Artifact
@@ -57,6 +58,7 @@ func TestProtocolTransfersInOrderAcrossCopyBoundaries(t *testing.T) {
 	}
 }
 
+// FR-LIFE-19
 func TestProtocolRejectsReceiptAndReceivedArtifactMismatchBeforeAdoption(t *testing.T) {
 	exported, err := NewArtifact("application/octet-stream", 1, []byte("exported"), nil)
 	if err != nil {
@@ -108,6 +110,7 @@ func TestProtocolRejectsReceiptAndReceivedArtifactMismatchBeforeAdoption(t *test
 	})
 }
 
+// FR-LIFE-19
 func TestProtocolPreservesStageErrors(t *testing.T) {
 	artifact, err := NewArtifact("application/octet-stream", 1, []byte("state"), nil)
 	if err != nil {
@@ -159,6 +162,7 @@ func TestProtocolPreservesStageErrors(t *testing.T) {
 	}
 }
 
+// FR-LIFE-19
 func TestNewProtocolRejectsNilCollaborators(t *testing.T) {
 	artifact, err := NewArtifact("application/octet-stream", 1, []byte("state"), nil)
 	if err != nil {

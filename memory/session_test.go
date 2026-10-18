@@ -9,6 +9,7 @@ import (
 	"github.com/justusschock/go-lifecycle/memory"
 )
 
+// FR-LIFE-13, FR-LIFE-17
 func TestStoreSessionsFenceRunOwnership(t *testing.T) {
 	store := memory.NewStore()
 	first, err := store.Acquire(context.Background(), "run")
@@ -48,6 +49,7 @@ func TestStoreSessionsFenceRunOwnership(t *testing.T) {
 	}
 }
 
+// FR-LIFE-13
 func TestSessionReleaseIgnoresCanceledAcquisitionContext(t *testing.T) {
 	store := memory.NewStore()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,6 +70,7 @@ func TestSessionReleaseIgnoresCanceledAcquisitionContext(t *testing.T) {
 	}
 }
 
+// FR-LIFE-17
 func TestStoreZeroValueIsReadyForUse(t *testing.T) {
 	var store memory.Store
 	session, err := store.Acquire(context.Background(), "run")

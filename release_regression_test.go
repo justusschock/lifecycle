@@ -14,6 +14,7 @@ import (
 	"github.com/justusschock/go-lifecycle/memory"
 )
 
+// FR-LIFE-13
 func TestEngineOwnsEachRunExclusively(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		started := make(chan struct{})
@@ -51,6 +52,7 @@ func TestEngineOwnsEachRunExclusively(t *testing.T) {
 	})
 }
 
+// FR-LIFE-13
 func TestEngineCancellationDoesNotStrandRunOwnership(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		started := make(chan struct{})
@@ -87,6 +89,7 @@ func TestEngineCancellationDoesNotStrandRunOwnership(t *testing.T) {
 	})
 }
 
+// FR-LIFE-05
 func TestEngineSchedulesNewlyReadyPhasesWithoutLevelBarrier(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		leftDone := make(chan struct{})
@@ -127,6 +130,7 @@ func TestEngineSchedulesNewlyReadyPhasesWithoutLevelBarrier(t *testing.T) {
 	})
 }
 
+// FR-LIFE-06
 func TestEngineAdmitsReadyPhasesLexically(t *testing.T) {
 	var mu sync.Mutex
 	var entered []string
@@ -161,6 +165,7 @@ func TestEngineAdmitsReadyPhasesLexically(t *testing.T) {
 	}
 }
 
+// FR-LIFE-14
 func TestEngineOrdersConcurrentEntryErrorsByPlanOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		started := make(chan struct{}, 2)
@@ -206,6 +211,7 @@ func TestEngineOrdersConcurrentEntryErrorsByPlanOrder(t *testing.T) {
 	})
 }
 
+// FR-LIFE-07
 func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
 	t.Run("exit", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
@@ -297,6 +303,7 @@ func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
 	})
 }
 
+// FR-LIFE-09
 func TestEnginePersistsStageSpecificFailuresAndCleansBestEffort(t *testing.T) {
 	t.Run("exit", func(t *testing.T) {
 		exitFailure := errors.New("a exit failed")
@@ -370,6 +377,7 @@ func TestEnginePersistsStageSpecificFailuresAndCleansBestEffort(t *testing.T) {
 	})
 }
 
+// FR-LIFE-11
 func TestRecoveredRollbackRetriesEnteringThenReturnsOriginalFailure(t *testing.T) {
 	var retried atomic.Int32
 	var rolledBack atomic.Int32
@@ -405,6 +413,7 @@ func TestRecoveredRollbackRetriesEnteringThenReturnsOriginalFailure(t *testing.T
 	}
 }
 
+// FR-LIFE-11
 func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *testing.T) {
 	var rootRollbacks atomic.Int32
 	noop := func(context.Context) error { return nil }
@@ -441,6 +450,7 @@ func TestRecoveredRollbackPreservesFailureAndFinishesOutstandingAncestors(t *tes
 	}
 }
 
+// FR-LIFE-11
 func TestRecoveredExitPreservesFailureAndFinishesOutstandingCleanup(t *testing.T) {
 	var bExits atomic.Int32
 	var rootExits atomic.Int32
@@ -478,6 +488,7 @@ func TestRecoveredExitPreservesFailureAndFinishesOutstandingCleanup(t *testing.T
 	}
 }
 
+// FR-LIFE-12
 func TestEngineValidatesLoadedSnapshots(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
@@ -534,6 +545,7 @@ func TestEngineValidatesLoadedSnapshots(t *testing.T) {
 	}
 }
 
+// FR-LIFE-14
 func TestEngineAcceptsFailureWhoseErrorTextIsEmpty(t *testing.T) {
 	want := emptyTextError{}
 	noop := func(context.Context) error { return nil }
@@ -555,6 +567,7 @@ func TestEngineAcceptsFailureWhoseErrorTextIsEmpty(t *testing.T) {
 	}
 }
 
+// FR-LIFE-14
 func TestEngineRecoversEmptyPersistedErrorTextExactly(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
@@ -576,6 +589,7 @@ func TestEngineRecoversEmptyPersistedErrorTextExactly(t *testing.T) {
 	}
 }
 
+// FR-LIFE-11
 func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
@@ -620,6 +634,7 @@ func TestEngineAcceptsEveryPersistedCrashBoundary(t *testing.T) {
 	}
 }
 
+// FR-LIFE-04
 func TestEngineRejectsTypedNilSession(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
@@ -632,6 +647,7 @@ func TestEngineRejectsTypedNilSession(t *testing.T) {
 	}
 }
 
+// FR-LIFE-04
 func TestEngineRejectsMismatchedSessionAndStillReleasesIt(t *testing.T) {
 	noop := func(context.Context) error { return nil }
 	plan := singlePhasePlan(t, "phase", noop, noop, noop)
