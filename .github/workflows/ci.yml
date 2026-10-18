@@ -1,43 +1,65 @@
 name: CI
 
 on:
-  pull_request:
   push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
-    name: Go ${{ matrix.go }}
+    name: Test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.22.x", "1.23.x", "1.24.x", "1.25.x", "1.26.x"]
-    env:
-      GOPRIVATE: github.com/justusschock/*
-      GONOSUMDB: github.com/justusschock/*
+        # 1.25 is the floor (testing/synctest); oldstable and stable are the
+        # two supported upstream releases.
+        go-version: ['1.25.x', 'oldstable', 'stable']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: ${{ matrix.go }}
-      - name: Configure private module access
-        env:
-          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
-        run: |
-          if [ -z "$GO_MODULES_TOKEN" ]; then
-            echo "GO_MODULES_TOKEN is required to resolve private modules" >&2
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
-      - name: Verify module graph
-        run: |
-          go mod download
-          go mod verify
-          go mod tidy -diff
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Verify modules
+        run: go mod verify
+
       - name: Vet
         run: go vet ./...
-      - name: Race test
-        run: go test -race ./...
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
