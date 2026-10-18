@@ -1,4 +1,4 @@
-# PRD 0001: go-lifecycle
+# PRD 0001: lifecycle
 
 | Field | Value |
 |---|---|
@@ -20,7 +20,7 @@ line but error-prone for a graph with forks and joins. It becomes hard once
 the process can crash halfway through, a step fails and everything already
 started has to be undone, or two processes might try to drive the same run.
 
-go-lifecycle gives Go programs one engine for this. A caller describes phases
+lifecycle gives Go programs one engine for this. A caller describes phases
 with dependencies and three idempotent actions (enter, exit, rollback). The
 library validates the graph, runs independent phases concurrently up to a
 bound, persists every action boundary through a fenced store session, and
@@ -106,7 +106,7 @@ artifacts.
 |---|---|---|
 | NFR-LIFE-01 | All exported types document their concurrency safety; shared types are safe for concurrent use. | `go test -race -count=3 ./...` passes. |
 | NFR-LIFE-02 | Tests are deterministic: time and goroutine coordination use `testing/synctest`, with no real sleeps or wall-clock deadlines. | No `time.Sleep`/`time.After` waits outside synctest bubbles; repeated runs pass. |
-| NFR-LIFE-03 | Minimal dependencies: the standard library plus `github.com/justusschock/go-concurrency`. | `go list -m all` lists only these modules. |
+| NFR-LIFE-03 | Minimal dependencies: the standard library plus `github.com/justusschock/concurrency`. | `go list -m all` lists only these modules. |
 | NFR-LIFE-04 | Supported toolchains: Go 1.25 and the two latest upstream releases. | CI matrix `1.25.x`, `oldstable`, `stable`. |
 | NFR-LIFE-05 | The library never logs, writes to stdout/stderr or keeps global mutable state. | Code review; no `log`/`fmt.Print` in non-test code. |
 | NFR-LIFE-06 | Caller-owned data is never shared: maps and slices are copied at every API and store boundary. | `TestPlanOwnsItsGraphData`, `TestStoreReturnsNotFoundAndCopiesSnapshots`, `TestNewArtifactCopiesInputsAndComputesStableIdentity`. |

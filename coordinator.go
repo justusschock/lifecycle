@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/justusschock/go-lifecycle/internal/nilcheck"
+	"github.com/justusschock/lifecycle/internal/nilcheck"
 )
 
 var errAdmissionPending = errors.New("lifecycle: phase admission pending")

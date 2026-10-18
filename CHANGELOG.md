@@ -53,6 +53,6 @@ Preparation for the first public release.
 - Initial release: `Plan`, `Engine`, fenced `Store`/`Session` contract,
   `memory.Store` and the `handoff` package.
 
-[Unreleased]: https://github.com/justusschock/go-lifecycle/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/justusschock/go-lifecycle/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/justusschock/go-lifecycle/releases/tag/v0.1.0
+[Unreleased]: https://github.com/justusschock/lifecycle/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/justusschock/lifecycle/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/justusschock/lifecycle/releases/tag/v0.1.0

@@ -1,7 +1,7 @@
 // Package nilcheck detects nil interface values, including interfaces that
 // hold a typed nil pointer, map, slice, channel or function.
 //
-// It is an implementation detail of go-lifecycle and not part of its API.
+// It is an implementation detail of lifecycle and not part of its API.
 package nilcheck
 
 import "reflect"

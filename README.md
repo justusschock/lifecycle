@@ -1,6 +1,6 @@
-# go-lifecycle
+# lifecycle
 
-`go-lifecycle` is a restartable lifecycle engine for Go. You describe phases
+`lifecycle` is a restartable lifecycle engine for Go. You describe phases
 with dependencies and idempotent enter, exit and rollback actions; the
 library validates the graph, runs independent phases concurrently, persists
 every action boundary, and resumes an interrupted run without repeating
@@ -29,11 +29,11 @@ through integrity-checked artifacts.
 ## Installation
 
 ```sh
-go get github.com/justusschock/go-lifecycle@latest
+go get github.com/justusschock/lifecycle@latest
 ```
 
 Requires Go 1.25 or newer. The only dependency outside the standard library
-is [`github.com/justusschock/go-concurrency`](https://github.com/justusschock/go-concurrency).
+is [`github.com/justusschock/concurrency`](https://github.com/justusschock/concurrency).
 
 ## Quick start
 
@@ -46,8 +46,8 @@ import (
 	"context"
 	"fmt"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
-	"github.com/justusschock/go-lifecycle/memory"
+	lifecycle "github.com/justusschock/lifecycle"
+	"github.com/justusschock/lifecycle/memory"
 )
 
 func main() {
@@ -96,9 +96,9 @@ succeeded
 
 | Package | Purpose |
 |---|---|
-| [`github.com/justusschock/go-lifecycle`](https://pkg.go.dev/github.com/justusschock/go-lifecycle) | Plans, topologies, `Engine`, `Coordinator`, snapshots, the `Store`/`Session` contract and sentinel errors. |
-| [`github.com/justusschock/go-lifecycle/memory`](https://pkg.go.dev/github.com/justusschock/go-lifecycle/memory) | In-memory `Store` for tests and process-local workflows. |
-| [`github.com/justusschock/go-lifecycle/handoff`](https://pkg.go.dev/github.com/justusschock/go-lifecycle/handoff) | Integrity-checked artifacts and the generic transfer protocol. |
+| [`github.com/justusschock/lifecycle`](https://pkg.go.dev/github.com/justusschock/lifecycle) | Plans, topologies, `Engine`, `Coordinator`, snapshots, the `Store`/`Session` contract and sentinel errors. |
+| [`github.com/justusschock/lifecycle/memory`](https://pkg.go.dev/github.com/justusschock/lifecycle/memory) | In-memory `Store` for tests and process-local workflows. |
+| [`github.com/justusschock/lifecycle/handoff`](https://pkg.go.dev/github.com/justusschock/lifecycle/handoff) | Integrity-checked artifacts and the generic transfer protocol. |
 
 Packages under `internal/` are not part of the API and may change in any
 release.
@@ -341,7 +341,7 @@ if err := artifact.Validate(); err != nil {
 
 ## Documentation
 
-- API reference: [pkg.go.dev/github.com/justusschock/go-lifecycle](https://pkg.go.dev/github.com/justusschock/go-lifecycle)
+- API reference: [pkg.go.dev/github.com/justusschock/lifecycle](https://pkg.go.dev/github.com/justusschock/lifecycle)
 - Requirements and design decisions: [docs/README.md](docs/README.md)
 - Changes: [CHANGELOG.md](CHANGELOG.md)
 

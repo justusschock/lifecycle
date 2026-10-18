@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
+	lifecycle "github.com/justusschock/lifecycle"
 )
 
 // FR-LIFE-18

@@ -10,7 +10,7 @@
 
 ## Context
 
-Recorded retrospectively for the first public release. go-lifecycle grew
+Recorded retrospectively for the first public release. lifecycle grew
 through test-first commits whose reasoning lived in commit messages and a
 long README. Public contributors need a durable, reviewable record of what
 the library must do and why it is built the way it is, and a process that

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"testing/synctest"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
-	"github.com/justusschock/go-lifecycle/memory"
+	lifecycle "github.com/justusschock/lifecycle"
+	"github.com/justusschock/lifecycle/memory"
 )
 
 type coordinatorResult struct {

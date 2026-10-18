@@ -7,9 +7,9 @@ import (
 	"slices"
 	"time"
 
-	concurrency "github.com/justusschock/go-concurrency"
+	concurrency "github.com/justusschock/concurrency"
 
-	"github.com/justusschock/go-lifecycle/internal/nilcheck"
+	"github.com/justusschock/lifecycle/internal/nilcheck"
 )
 
 // Engine automatically drives a callback-bearing Plan through a durable

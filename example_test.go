@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
-	"github.com/justusschock/go-lifecycle/memory"
+	lifecycle "github.com/justusschock/lifecycle"
+	"github.com/justusschock/lifecycle/memory"
 )
 
 // Example starts three dependent phases in order and stops them in reverse.

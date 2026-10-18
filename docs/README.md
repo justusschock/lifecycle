@@ -1,4 +1,4 @@
-# go-lifecycle documentation
+# lifecycle documentation
 
 Requirements (PRDs) say *what* the library does; architecture decision
 records (ADRs) say *how and why*. The process is described in
@@ -10,7 +10,7 @@ records (ADRs) say *how and why*. The process is described in
 
 | PRD | Title | Status | Implementation |
 |---|---|---|---|
-| [0001](prd/0001-go-lifecycle.md) | go-lifecycle | Accepted | Complete |
+| [0001](prd/0001-lifecycle.md) | lifecycle | Accepted | Complete |
 
 Requirement area code: `LIFE` (`FR-LIFE-NN`, `NFR-LIFE-NN`).
 

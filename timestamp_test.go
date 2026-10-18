@@ -7,8 +7,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
-	"github.com/justusschock/go-lifecycle/memory"
+	lifecycle "github.com/justusschock/lifecycle"
+	"github.com/justusschock/lifecycle/memory"
 )
 
 // FR-LIFE-16

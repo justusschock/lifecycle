@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
+	lifecycle "github.com/justusschock/lifecycle"
 )
 
 // Store is a process-local, mutex-protected lifecycle.Store. It clones

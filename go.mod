@@ -1,5 +1,5 @@
-module github.com/justusschock/go-lifecycle
+module github.com/justusschock/lifecycle
 
 go 1.25
 
-require github.com/justusschock/go-concurrency v0.2.0
+require github.com/justusschock/concurrency v0.2.0

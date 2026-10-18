@@ -1,10 +1,10 @@
 # AGENTS.md
 
-Rules for anyone, human or agent, changing go-lifecycle. They are binding. If a
+Rules for anyone, human or agent, changing lifecycle. They are binding. If a
 change has to break one, say so in the pull request and, where it is a design
 decision, record it in an ADR.
 
-go-lifecycle is a restartable lifecycle engine for directed acyclic graphs
+lifecycle is a restartable lifecycle engine for directed acyclic graphs
 of phases, with durable, fenced persistence and a generic, integrity-checked
 handoff protocol. Its requirements and design decisions are
 recorded in [docs/](docs/README.md).
@@ -67,7 +67,7 @@ No behaviour is added or changed before the documents that govern it say so.
 
 1. **Small, explicit contracts.** Every exported type and function documents
    its behaviour, errors, concurrency safety and cancellation.
-2. **Dependencies.** Standard library plus `github.com/justusschock/go-concurrency`
+2. **Dependencies.** Standard library plus `github.com/justusschock/concurrency`
    only (ADR-0003). No third-party modules; a new dependency needs an ADR.
 3. **Errors.** Sentinel errors and typed errors are part of the API; wrap
    with `%w` and test with `errors.Is`/`errors.As`.

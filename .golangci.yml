@@ -16,4 +16,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/justusschock/go-lifecycle
+        - github.com/justusschock/lifecycle

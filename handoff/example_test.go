@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/justusschock/go-lifecycle/handoff"
+	"github.com/justusschock/lifecycle/handoff"
 )
 
 type exporterFunc func(context.Context, []byte) (handoff.Artifact, error)

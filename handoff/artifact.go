@@ -8,7 +8,7 @@ import (
 	"maps"
 	"slices"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
+	lifecycle "github.com/justusschock/lifecycle"
 )
 
 // Artifact is an integrity-checked envelope of exported state. ID is the

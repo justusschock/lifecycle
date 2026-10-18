@@ -11,8 +11,8 @@
 ## Context
 
 Recorded retrospectively for the first public release. Handoff artifacts
-cross process and storage boundaries (go-object-storage stores them as
-objects; go-reconciliation and go-executor exchange them). Their identity
+cross process and storage boundaries (object-storage stores them as
+objects; reconciliation and executor exchange them). Their identity
 must be reproducible by any party from the content alone, must change when
 any semantic field changes, and must not depend on Go map iteration order.
 

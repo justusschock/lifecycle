@@ -12,8 +12,8 @@
 
 Recorded retrospectively for the first public release. Before publishing,
 every exported package and identifier was reviewed against what consumers
-need. Known consumers are go-executor, go-object-storage and
-go-reconciliation (the `handoff` package and the root error sentinels),
+need. Known consumers are executor, object-storage and
+reconciliation (the `handoff` package and the root error sentinels),
 go-shape (`NewPlan`, `Phase`, `NewEngine`, `Options`, `RunSucceeded`,
 `memory.NewStore`) and dtc (`NewTopology`, `PhaseSpec`).
 
@@ -51,16 +51,16 @@ We choose option 1.
 
 Public:
 
-- `github.com/justusschock/go-lifecycle`: `Action`, `Phase`, `Plan`,
+- `github.com/justusschock/lifecycle`: `Action`, `Phase`, `Plan`,
   `NewPlan`, `PhaseSpec`, `Topology`, `NewTopology`, `Engine`, `NewEngine`,
   `Coordinator`, `OpenCoordinator`, `Execution`, `Options` (including
   `Options.Clock`, which defaults to `time.Now` when nil), `Store`,
   `Session`, `Snapshot`, `PhaseState`, `PhaseStatus` and `RunStatus` with
   their constants (including the deprecated `PhaseFailed` alias of
   `PhaseEnterFailed`), and all `Err*` sentinels.
-- `github.com/justusschock/go-lifecycle/memory`: `Store`, `NewStore`, and
+- `github.com/justusschock/lifecycle/memory`: `Store`, `NewStore`, and
   the `Store.Load`/`Store.Save` conveniences for inspecting and seeding runs.
-- `github.com/justusschock/go-lifecycle/handoff`: `Artifact`,
+- `github.com/justusschock/lifecycle/handoff`: `Artifact`,
   `NewArtifact`, `Receipt`, `Exporter`, `Transport`, `Adopter`, `Protocol`,
   `NewProtocol`.
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	lifecycle "github.com/justusschock/go-lifecycle"
-	"github.com/justusschock/go-lifecycle/internal/nilcheck"
+	lifecycle "github.com/justusschock/lifecycle"
+	"github.com/justusschock/lifecycle/internal/nilcheck"
 )
 
 // Exporter turns source state into an artifact.
