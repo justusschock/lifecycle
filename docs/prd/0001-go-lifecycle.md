@@ -95,7 +95,7 @@ artifacts.
 | FR-LIFE-13 | Each run has at most one owner: `Acquire` returns `ErrRunOwned` while another session is active, released or superseded sessions fail with `ErrOwnershipLost`, and the engine and coordinator release ownership with a context independent of cancellation. | MUST |
 | FR-LIFE-14 | Errors from concurrent or recovered failures are joined in topological-level, then lexical, order; live action errors keep their identity for `errors.Is`; recovered errors keep their exact persisted text, including empty text. | MUST |
 | FR-LIFE-15 | `Coordinator` lets callers drive actions: `EnterPhase`, `ExitPhase` and `RollbackPhase` block until ready, never admit the same phase twice concurrently, return a non-runnable `Execution` for completed work, reject stage operations invalid for the run state, and a cancelled admission does not affect later admissions. | MUST |
-| FR-LIFE-16 | Phase and run `UpdatedAt` timestamps record the time of each transition from `time.Now`. | SHOULD |
+| FR-LIFE-16 | Phase and run `UpdatedAt` timestamps record the time of each transition from `Options.Clock`, or `time.Now` when it is nil. | SHOULD |
 | FR-LIFE-17 | `memory.Store` implements the Store/Session contract in process: it returns `ErrSnapshotNotFound` for absent runs, clones snapshots at every boundary, fences stale sessions, and its zero value is ready for use. | MUST |
 | FR-LIFE-18 | `handoff.NewArtifact` copies its inputs and derives `Digest` and `ID` from a canonical, length-prefixed envelope of media type, version, data and sorted metadata; `Validate` rejects missing fields (`ErrInvalidArtifact`) and tampering (`ErrIntegrity`). | MUST |
 | FR-LIFE-19 | `handoff.Protocol.Transfer` runs Export, Send, Receive, Adopt in order, validates artifacts and receipt identity at each boundary, never adopts after an integrity failure, wraps errors with the failing stage, and `NewProtocol` rejects nil collaborators. | MUST |
@@ -126,7 +126,10 @@ func NewTopology(phases []PhaseSpec) (*Topology, error)
 func (*Plan) Digest() string
 func (*Plan) Levels() [][]Phase
 
-type Options struct{ MaxParallel int }
+type Options struct {
+	MaxParallel int
+	Clock       func() time.Time // nil means time.Now
+}
 func NewEngine(plan *Plan, store Store, options Options) (*Engine, error)
 func (*Engine) Run(ctx context.Context, runID string) (Snapshot, error)
 
@@ -176,7 +179,7 @@ func NewStore() *Store
 | Runs are owned exclusively and released on cancellation | FR-LIFE-13 | `TestEngineOwnsEachRunExclusively`, `TestEngineCancellationDoesNotStrandRunOwnership`, `TestStoreSessionsFenceRunOwnership`, `TestSessionReleaseIgnoresCanceledAcquisitionContext`, `TestCoordinatorCloseReleasesOwnershipAfterCancellation`, `TestCoordinatorCloseRetriesFailedRelease` |
 | Errors are ordered deterministically | FR-LIFE-14 | `TestEngineOrdersConcurrentEntryErrorsByPlanOrder`, `TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder`, `TestEngineAcceptsFailureWhoseErrorTextIsEmpty`, `TestEngineRecoversEmptyPersistedErrorTextExactly` |
 | Coordinator admission rules | FR-LIFE-15 | `TestCoordinatorPreventsDuplicateConcurrentExecution`, `TestCoordinatorCanceledAdmissionDoesNotStopLaterAdmission`, `TestCoordinatorRejectsStageOperationsInInvalidRunState` |
-| Transitions are timestamped | FR-LIFE-16 | `TestEngineStampsTransitionsWithCurrentTime` |
+| Transitions are timestamped | FR-LIFE-16 | `TestEngineStampsTransitionsWithCurrentTime`, `TestEngineStampsTransitionsWithSuppliedClock` |
 | In-memory store honours the contract | FR-LIFE-17 | `TestStoreReturnsNotFoundAndCopiesSnapshots`, `TestStoreZeroValueIsReadyForUse`, `TestStoreSessionsFenceRunOwnership` |
 | Artifact identity is canonical and tamper-evident | FR-LIFE-18 | `TestNewArtifactCopiesInputsAndComputesStableIdentity`, `TestArtifactIdentityCommitsToCanonicalSemanticEnvelope`, `TestArtifactRejectsInvalidFieldsAndTampering` |
 | Handoff protocol order and integrity | FR-LIFE-19 | `TestProtocolTransfersInOrderAcrossCopyBoundaries`, `TestProtocolRejectsReceiptAndReceivedArtifactMismatchBeforeAdoption`, `TestProtocolPreservesStageErrors`, `TestNewProtocolRejectsNilCollaborators` |

@@ -84,7 +84,9 @@ No behaviour is added or changed before the documents that govern it say so.
   public entry point, kept in sync with the README.
 - **`testing/synctest`** for anything involving time or concurrency
   (timeouts, TTLs, retries, tickers, leases, goroutine coordination). No real
-  `time.Sleep` waits in tests.
+  `time.Sleep` waits in tests. `Options.Clock` is public API for callers;
+  tests leave it nil and rely on the bubble's virtual clock, except tests
+  of `Clock` itself.
 - There is no public conformance suite yet (PRD-0001 Q1). A new `Store`
   implementation mirrors the `memory` package tests and the contract in
   ADR-0006.

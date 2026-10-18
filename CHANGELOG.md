@@ -14,12 +14,10 @@ Preparation for the first public release.
 
 - **Breaking:** the minimum Go version is now 1.25 (was 1.22), because the
   tests use `testing/synctest` (ADR-0009).
-- **Breaking:** removed `Options.Clock`. Snapshot timestamps now always come
-  from `time.Now`; tests control time with `testing/synctest` (ADR-0008).
-- **Breaking:** removed the deprecated `PhaseFailed` alias; use
-  `PhaseEnterFailed` (ADR-0008).
 - Typed-nil detection shared by the root and `handoff` packages moved to
-  `internal/nilcheck`; `internal/` is not part of the API.
+  `internal/nilcheck`; `internal/` is not part of the API. No exported
+  identifier was removed: `Options.Clock` and the deprecated `PhaseFailed`
+  alias remain public (ADR-0008).
 - Concurrency tests run inside `testing/synctest` bubbles, so "still
   blocked" assertions are deterministic and no test waits on real time.
 - CI runs on Go 1.25, `oldstable` and `stable` with the race detector and

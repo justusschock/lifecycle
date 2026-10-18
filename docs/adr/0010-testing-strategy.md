@@ -35,10 +35,10 @@ some waited up to one real second for a phase to start.
 2. **Real time with generous timeouts**
    - Pro: no new tooling.
    - Con: slow and flaky; negative checks are probabilistic.
-3. **Injected fake clocks**
-   - Pro: deterministic time.
-   - Con: widens the public API (`Options.Clock`) only for tests and does
-     not help with goroutine scheduling.
+3. **Injected fake clocks (`Options.Clock`) in every test**
+   - Pro: deterministic timestamps.
+   - Con: does not help with goroutine scheduling or blocking assertions,
+     and every test would have to thread a clock through.
 
 ## Decision
 
@@ -47,7 +47,8 @@ We will:
 - Run tests that coordinate goroutines or depend on time inside
   `synctest.Test` and call `synctest.Wait` before every "still blocked" or
   "not yet started" assertion. Snapshot timestamps are checked against the
-  bubble's virtual clock.
+  bubble's virtual clock with the default (nil) `Options.Clock`; one test
+  checks that a supplied `Options.Clock` is honoured.
 - Keep pure tests (graph validation, snapshot validation tables, artifact
   hashing, store copies) outside synctest; they involve no time or
   concurrency.

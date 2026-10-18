@@ -207,6 +207,11 @@ retried when the run resumes. Completed actions are never repeated.
 | `rolled_back` | Skip `Rollback`. |
 | `rollback_failed` | Preserve the rollback failure and continue cleanup toward dependencies. |
 
+Each status has a `PhaseStatus` constant, from `PhasePending` to
+`PhaseRollbackFailed`. `PhaseFailed` is a deprecated alias of
+`PhaseEnterFailed` kept for compatibility; new code should use
+`PhaseEnterFailed`.
+
 A recovered run in `rolling_back` retries every durable `entering` phase
 before rollback begins. Loaded snapshots are validated before any action
 runs: run ID, plan digest, exact phase set, statuses, attempt counts, error
@@ -216,7 +221,8 @@ text, reachable run state and dependency ordering. A plan mismatch returns
 
 Each `PhaseState` records `Status`, `Attempts` (actions started across
 entry, exit and rollback), `LastError` (text of the last persisted action
-error) and `UpdatedAt` (time of the last transition, from `time.Now`).
+error) and `UpdatedAt` (time of the last transition, from `Options.Clock`,
+or `time.Now` when it is nil).
 
 ### Store contract
 
