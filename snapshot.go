@@ -31,6 +31,7 @@ const (
 	PhaseRollbackFailed PhaseStatus = "rollback_failed"
 
 	// PhaseFailed is retained as an alias for entry failures.
+	//
 	// Deprecated: use PhaseEnterFailed.
 	PhaseFailed = PhaseEnterFailed
 )
@@ -110,7 +111,9 @@ type Options struct {
 	// MaxParallel bounds the number of concurrently admitted actions. Zero
 	// means 1; negative values are rejected with ErrInvalidPhase.
 	MaxParallel int
-	Clock       func() time.Time
+	// Clock returns the time recorded in snapshot and phase UpdatedAt
+	// fields. Nil means time.Now.
+	Clock func() time.Time
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
