@@ -8,117 +8,124 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	lifecycle "github.com/justusschock/go-lifecycle"
 	"github.com/justusschock/go-lifecycle/memory"
 )
 
 func TestEngineOwnsEachRunExclusively(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	noop := func(context.Context) error { return nil }
-	plan := singlePhasePlan(t, "phase", func(context.Context) error {
-		calls.Add(1)
-		close(started)
-		<-release
-		return nil
-	}, noop, noop)
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var calls atomic.Int32
+		noop := func(context.Context) error { return nil }
+		plan := singlePhasePlan(t, "phase", func(context.Context) error {
+			calls.Add(1)
+			close(started)
+			<-release
+			return nil
+		}, noop, noop)
+		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	first := make(chan error, 1)
-	go func() {
-		_, err := engine.Run(context.Background(), "exclusive")
-		first <- err
-	}()
-	<-started
+		first := make(chan error, 1)
+		go func() {
+			_, err := engine.Run(context.Background(), "exclusive")
+			first <- err
+		}()
+		<-started
 
-	if _, err := engine.Run(context.Background(), "exclusive"); !errors.Is(err, lifecycle.ErrRunOwned) {
-		t.Fatalf("concurrent Run error = %v, want %v", err, lifecycle.ErrRunOwned)
-	}
-	close(release)
-	if err := <-first; err != nil {
-		t.Fatal(err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("entry calls = %d, want 1", got)
-	}
+		if _, err := engine.Run(context.Background(), "exclusive"); !errors.Is(err, lifecycle.ErrRunOwned) {
+			t.Fatalf("concurrent Run error = %v, want %v", err, lifecycle.ErrRunOwned)
+		}
+		close(release)
+		if err := <-first; err != nil {
+			t.Fatal(err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("entry calls = %d, want 1", got)
+		}
+	})
 }
 
 func TestEngineCancellationDoesNotStrandRunOwnership(t *testing.T) {
-	started := make(chan struct{})
-	var calls atomic.Int32
-	noop := func(context.Context) error { return nil }
-	plan := singlePhasePlan(t, "phase", func(ctx context.Context) error {
-		if calls.Add(1) == 1 {
-			close(started)
-			<-ctx.Done()
-			return context.Cause(ctx)
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		var calls atomic.Int32
+		noop := func(context.Context) error { return nil }
+		plan := singlePhasePlan(t, "phase", func(ctx context.Context) error {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-ctx.Done()
+				return context.Cause(ctx)
+			}
+			return nil
+		}, noop, noop)
+		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return nil
-	}, noop, noop)
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	first := make(chan error, 1)
-	go func() {
-		_, err := engine.Run(ctx, "canceled")
-		first <- err
-	}()
-	<-started
-	cancel()
-	if err := <-first; !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Run error = %v, want %v", err, context.Canceled)
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		first := make(chan error, 1)
+		go func() {
+			_, err := engine.Run(ctx, "canceled")
+			first <- err
+		}()
+		<-started
+		cancel()
+		if err := <-first; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled Run error = %v, want %v", err, context.Canceled)
+		}
 
-	if _, err := engine.Run(context.Background(), "canceled"); err != nil {
-		t.Fatalf("Run after cancellation = %v, want successful reacquisition", err)
-	}
+		if _, err := engine.Run(context.Background(), "canceled"); err != nil {
+			t.Fatalf("Run after cancellation = %v, want successful reacquisition", err)
+		}
+	})
 }
 
 func TestEngineSchedulesNewlyReadyPhasesWithoutLevelBarrier(t *testing.T) {
-	leftDone := make(chan struct{})
-	rightStarted := make(chan struct{})
-	releaseRight := make(chan struct{})
-	childStarted := make(chan struct{})
-	noop := func(context.Context) error { return nil }
-	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-		{Name: "left", Enter: func(context.Context) error { close(leftDone); return nil }, Exit: noop, Rollback: noop},
-		{Name: "right", Enter: func(context.Context) error { close(rightStarted); <-releaseRight; return nil }, Exit: noop, Rollback: noop},
-		{Name: "child", DependsOn: []string{"left"}, Enter: func(context.Context) error { close(childStarted); return nil }, Exit: noop, Rollback: noop},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 3})
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := engine.Run(context.Background(), "ready")
-		done <- err
-	}()
-	<-leftDone
-	<-rightStarted
-	select {
-	case <-childStarted:
-	case <-time.After(time.Second):
+	synctest.Test(t, func(t *testing.T) {
+		leftDone := make(chan struct{})
+		rightStarted := make(chan struct{})
+		releaseRight := make(chan struct{})
+		childStarted := make(chan struct{})
+		noop := func(context.Context) error { return nil }
+		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+			{Name: "left", Enter: func(context.Context) error { close(leftDone); return nil }, Exit: noop, Rollback: noop},
+			{Name: "right", Enter: func(context.Context) error { close(rightStarted); <-releaseRight; return nil }, Exit: noop, Rollback: noop},
+			{Name: "child", DependsOn: []string{"left"}, Enter: func(context.Context) error { close(childStarted); return nil }, Exit: noop, Rollback: noop},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := engine.Run(context.Background(), "ready")
+			done <- err
+		}()
+		<-leftDone
+		<-rightStarted
+		synctest.Wait()
+		select {
+		case <-childStarted:
+		default:
+			close(releaseRight)
+			<-done
+			t.Fatal("child waited for an unrelated root")
+		}
 		close(releaseRight)
-		<-done
-		t.Fatal("child waited for an unrelated root")
-	}
-	close(releaseRight)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestEngineAdmitsReadyPhasesLexically(t *testing.T) {
@@ -156,63 +163,20 @@ func TestEngineAdmitsReadyPhasesLexically(t *testing.T) {
 }
 
 func TestEngineOrdersConcurrentEntryErrorsByPlanOrder(t *testing.T) {
-	started := make(chan struct{}, 2)
-	release := make(chan struct{})
-	noop := func(context.Context) error { return nil }
-	failing := func(message string) lifecycle.Action {
-		return func(context.Context) error {
-			started <- struct{}{}
-			<-release
-			return errors.New(message)
-		}
-	}
-	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-		{Name: "z", Enter: failing("z failed"), Exit: noop, Rollback: noop},
-		{Name: "a", Enter: failing("a failed"), Exit: noop, Rollback: noop},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	type outcome struct {
-		snapshot lifecycle.Snapshot
-		err      error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		snapshot, err := engine.Run(context.Background(), "ordered-errors")
-		done <- outcome{snapshot: snapshot, err: err}
-	}()
-	<-started
-	<-started
-	close(release)
-	result := <-done
-	if result.err == nil || result.err.Error() != "a failed\nz failed" {
-		t.Fatalf("Run error = %q, want canonical plan order", result.err)
-	}
-	if result.snapshot.Status != lifecycle.RunRolledBack {
-		t.Fatalf("status = %q, want %q", result.snapshot.Status, lifecycle.RunRolledBack)
-	}
-}
-
-func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
-	t.Run("exit", func(t *testing.T) {
-		rightStarted := make(chan struct{})
-		releaseRight := make(chan struct{})
-		leftRootStarted := make(chan struct{})
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{}, 2)
+		release := make(chan struct{})
 		noop := func(context.Context) error { return nil }
+		failing := func(message string) lifecycle.Action {
+			return func(context.Context) error {
+				started <- struct{}{}
+				<-release
+				return errors.New(message)
+			}
+		}
 		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-			{Name: "left-root", Enter: noop, Exit: func(context.Context) error { close(leftRootStarted); return nil }, Rollback: noop},
-			{Name: "left-leaf", DependsOn: []string{"left-root"}, Enter: noop, Exit: noop, Rollback: noop},
-			{Name: "right-root", Enter: noop, Exit: noop, Rollback: noop},
-			{Name: "right-leaf", DependsOn: []string{"right-root"}, Enter: noop, Exit: func(context.Context) error {
-				close(rightStarted)
-				<-releaseRight
-				return nil
-			}, Rollback: noop},
+			{Name: "z", Enter: failing("z failed"), Exit: noop, Rollback: noop},
+			{Name: "a", Enter: failing("a failed"), Exit: noop, Rollback: noop},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -221,67 +185,118 @@ func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		done := make(chan error, 1)
+		type outcome struct {
+			snapshot lifecycle.Snapshot
+			err      error
+		}
+		done := make(chan outcome, 1)
 		go func() {
-			_, err := engine.Run(context.Background(), "reverse-exit")
-			done <- err
+			snapshot, err := engine.Run(context.Background(), "ordered-errors")
+			done <- outcome{snapshot: snapshot, err: err}
 		}()
-		<-rightStarted
-		select {
-		case <-leftRootStarted:
-		case <-time.After(time.Second):
+		<-started
+		<-started
+		close(release)
+		result := <-done
+		if result.err == nil || result.err.Error() != "a failed\nz failed" {
+			t.Fatalf("Run error = %q, want canonical plan order", result.err)
+		}
+		if result.snapshot.Status != lifecycle.RunRolledBack {
+			t.Fatalf("status = %q, want %q", result.snapshot.Status, lifecycle.RunRolledBack)
+		}
+	})
+}
+
+func TestEngineSchedulesReverseCleanupWithoutLevelBarriers(t *testing.T) {
+	t.Run("exit", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			rightStarted := make(chan struct{})
+			releaseRight := make(chan struct{})
+			leftRootStarted := make(chan struct{})
+			noop := func(context.Context) error { return nil }
+			plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+				{Name: "left-root", Enter: noop, Exit: func(context.Context) error { close(leftRootStarted); return nil }, Rollback: noop},
+				{Name: "left-leaf", DependsOn: []string{"left-root"}, Enter: noop, Exit: noop, Rollback: noop},
+				{Name: "right-root", Enter: noop, Exit: noop, Rollback: noop},
+				{Name: "right-leaf", DependsOn: []string{"right-root"}, Enter: noop, Exit: func(context.Context) error {
+					close(rightStarted)
+					<-releaseRight
+					return nil
+				}, Rollback: noop},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := engine.Run(context.Background(), "reverse-exit")
+				done <- err
+			}()
+			<-rightStarted
+			synctest.Wait()
+			select {
+			case <-leftRootStarted:
+			default:
+				close(releaseRight)
+				<-done
+				t.Fatal("left root exit waited for unrelated right leaf")
+			}
 			close(releaseRight)
-			<-done
-			t.Fatal("left root exit waited for unrelated right leaf")
-		}
-		close(releaseRight)
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
 	})
 
 	t.Run("rollback", func(t *testing.T) {
-		entryFailure := errors.New("entry failed")
-		rightEntered := make(chan struct{})
-		rightRollbackStarted := make(chan struct{})
-		releaseRightRollback := make(chan struct{})
-		leftRootRollbackStarted := make(chan struct{})
-		noop := func(context.Context) error { return nil }
-		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-			{Name: "left-root", Enter: noop, Exit: noop, Rollback: func(context.Context) error { close(leftRootRollbackStarted); return nil }},
-			{Name: "left-leaf", DependsOn: []string{"left-root"}, Enter: noop, Exit: noop, Rollback: noop},
-			{Name: "right-root", Enter: noop, Exit: noop, Rollback: noop},
-			{Name: "right-leaf", DependsOn: []string{"right-root"}, Enter: func(context.Context) error { close(rightEntered); return nil }, Exit: noop, Rollback: func(context.Context) error {
-				close(rightRollbackStarted)
-				<-releaseRightRollback
-				return nil
-			}},
-			{Name: "fail", DependsOn: []string{"left-leaf"}, Enter: func(context.Context) error { <-rightEntered; return entryFailure }, Exit: noop, Rollback: noop},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 3})
-		if err != nil {
-			t.Fatal(err)
-		}
-		done := make(chan error, 1)
-		go func() {
-			_, err := engine.Run(context.Background(), "reverse-rollback")
-			done <- err
-		}()
-		<-rightRollbackStarted
-		select {
-		case <-leftRootRollbackStarted:
-		case <-time.After(time.Second):
+		synctest.Test(t, func(t *testing.T) {
+			entryFailure := errors.New("entry failed")
+			rightEntered := make(chan struct{})
+			rightRollbackStarted := make(chan struct{})
+			releaseRightRollback := make(chan struct{})
+			leftRootRollbackStarted := make(chan struct{})
+			noop := func(context.Context) error { return nil }
+			plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+				{Name: "left-root", Enter: noop, Exit: noop, Rollback: func(context.Context) error { close(leftRootRollbackStarted); return nil }},
+				{Name: "left-leaf", DependsOn: []string{"left-root"}, Enter: noop, Exit: noop, Rollback: noop},
+				{Name: "right-root", Enter: noop, Exit: noop, Rollback: noop},
+				{Name: "right-leaf", DependsOn: []string{"right-root"}, Enter: func(context.Context) error { close(rightEntered); return nil }, Exit: noop, Rollback: func(context.Context) error {
+					close(rightRollbackStarted)
+					<-releaseRightRollback
+					return nil
+				}},
+				{Name: "fail", DependsOn: []string{"left-leaf"}, Enter: func(context.Context) error { <-rightEntered; return entryFailure }, Exit: noop, Rollback: noop},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := engine.Run(context.Background(), "reverse-rollback")
+				done <- err
+			}()
+			<-rightRollbackStarted
+			synctest.Wait()
+			select {
+			case <-leftRootRollbackStarted:
+			default:
+				close(releaseRightRollback)
+				<-done
+				t.Fatal("left root rollback waited for unrelated right leaf")
+			}
 			close(releaseRightRollback)
-			<-done
-			t.Fatal("left root rollback waited for unrelated right leaf")
-		}
-		close(releaseRightRollback)
-		if err := <-done; !errors.Is(err, entryFailure) {
-			t.Fatalf("Run error = %v, want %v", err, entryFailure)
-		}
+			if err := <-done; !errors.Is(err, entryFailure) {
+				t.Fatalf("Run error = %v, want %v", err, entryFailure)
+			}
+		})
 	})
 }
 

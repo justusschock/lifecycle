@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 
 	lifecycle "github.com/justusschock/go-lifecycle"
 	"github.com/justusschock/go-lifecycle/memory"
@@ -15,106 +16,114 @@ type coordinatorResult struct {
 }
 
 func TestCoordinatorBlocksUntilDependenciesDurablyComplete(t *testing.T) {
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "root"},
-		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
-	)
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "dependency-run", lifecycle.Options{MaxParallel: 2})
-	defer closeCoordinator(t, coordinator)
+	synctest.Test(t, func(t *testing.T) {
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "root"},
+			lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+		)
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "dependency-run", lifecycle.Options{MaxParallel: 2})
+		defer closeCoordinator(t, coordinator)
 
-	child := enterAsync(coordinator, "child")
-	assertStillWaiting(t, child)
+		child := enterAsync(coordinator, "child")
+		assertStillWaiting(t, child)
 
-	root, err := coordinator.EnterPhase(context.Background(), "root")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := root.Complete(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
+		root, err := coordinator.EnterPhase(context.Background(), "root")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := root.Complete(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
 
-	childResult := <-child
-	if childResult.err != nil {
-		t.Fatal(childResult.err)
-	}
-	if !childResult.execution.ShouldRun() {
-		t.Fatal("child did not require execution")
-	}
-	if err := childResult.execution.Complete(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
+		childResult := <-child
+		if childResult.err != nil {
+			t.Fatal(childResult.err)
+		}
+		if !childResult.execution.ShouldRun() {
+			t.Fatal("child did not require execution")
+		}
+		if err := childResult.execution.Complete(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestCoordinatorAdmitsSiblingsAndBlocksJoin(t *testing.T) {
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "root"},
-		lifecycle.PhaseSpec{Name: "left", DependsOn: []string{"root"}},
-		lifecycle.PhaseSpec{Name: "right", DependsOn: []string{"root"}},
-		lifecycle.PhaseSpec{Name: "join", DependsOn: []string{"left", "right"}},
-	)
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "join-run", lifecycle.Options{MaxParallel: 2})
-	defer closeCoordinator(t, coordinator)
+	synctest.Test(t, func(t *testing.T) {
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "root"},
+			lifecycle.PhaseSpec{Name: "left", DependsOn: []string{"root"}},
+			lifecycle.PhaseSpec{Name: "right", DependsOn: []string{"root"}},
+			lifecycle.PhaseSpec{Name: "join", DependsOn: []string{"left", "right"}},
+		)
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "join-run", lifecycle.Options{MaxParallel: 2})
+		defer closeCoordinator(t, coordinator)
 
-	root := enterPhase(t, coordinator, "root")
-	completePhase(t, root, nil)
+		root := enterPhase(t, coordinator, "root")
+		completePhase(t, root, nil)
 
-	leftResult := enterAsync(coordinator, "left")
-	rightResult := enterAsync(coordinator, "right")
-	left := requireExecution(t, <-leftResult)
-	right := requireExecution(t, <-rightResult)
+		leftResult := enterAsync(coordinator, "left")
+		rightResult := enterAsync(coordinator, "right")
+		left := requireExecution(t, <-leftResult)
+		right := requireExecution(t, <-rightResult)
 
-	joinResult := enterAsync(coordinator, "join")
-	assertStillWaiting(t, joinResult)
-	completePhase(t, left, nil)
-	assertStillWaiting(t, joinResult)
-	completePhase(t, right, nil)
-	completePhase(t, requireExecution(t, <-joinResult), nil)
+		joinResult := enterAsync(coordinator, "join")
+		assertStillWaiting(t, joinResult)
+		completePhase(t, left, nil)
+		assertStillWaiting(t, joinResult)
+		completePhase(t, right, nil)
+		completePhase(t, requireExecution(t, <-joinResult), nil)
+	})
 }
 
 func TestCoordinatorEnforcesMaxParallel(t *testing.T) {
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "a"},
-		lifecycle.PhaseSpec{Name: "b"},
-		lifecycle.PhaseSpec{Name: "c"},
-	)
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "parallel-run", lifecycle.Options{MaxParallel: 2})
-	defer closeCoordinator(t, coordinator)
+	synctest.Test(t, func(t *testing.T) {
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "a"},
+			lifecycle.PhaseSpec{Name: "b"},
+			lifecycle.PhaseSpec{Name: "c"},
+		)
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "parallel-run", lifecycle.Options{MaxParallel: 2})
+		defer closeCoordinator(t, coordinator)
 
-	results := make(chan coordinatorResult, 3)
-	for _, name := range []string{"a", "b", "c"} {
-		name := name
-		go func() {
-			execution, err := coordinator.EnterPhase(context.Background(), name)
-			results <- coordinatorResult{execution: execution, err: err}
-		}()
-	}
+		results := make(chan coordinatorResult, 3)
+		for _, name := range []string{"a", "b", "c"} {
+			name := name
+			go func() {
+				execution, err := coordinator.EnterPhase(context.Background(), name)
+				results <- coordinatorResult{execution: execution, err: err}
+			}()
+		}
 
-	first := requireExecution(t, <-results)
-	second := requireExecution(t, <-results)
-	assertStillWaiting(t, results)
-	completePhase(t, first, nil)
-	third := requireExecution(t, <-results)
-	completePhase(t, second, nil)
-	completePhase(t, third, nil)
+		first := requireExecution(t, <-results)
+		second := requireExecution(t, <-results)
+		assertStillWaiting(t, results)
+		completePhase(t, first, nil)
+		third := requireExecution(t, <-results)
+		completePhase(t, second, nil)
+		completePhase(t, third, nil)
+	})
 }
 
 func TestCoordinatorPreventsDuplicateConcurrentExecution(t *testing.T) {
-	topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "duplicate-run", lifecycle.Options{MaxParallel: 2})
-	defer closeCoordinator(t, coordinator)
+	synctest.Test(t, func(t *testing.T) {
+		topology := coordinatorTopology(t, lifecycle.PhaseSpec{Name: "phase"})
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "duplicate-run", lifecycle.Options{MaxParallel: 2})
+		defer closeCoordinator(t, coordinator)
 
-	first := enterPhase(t, coordinator, "phase")
-	duplicate := enterAsync(coordinator, "phase")
-	assertStillWaiting(t, duplicate)
-	completePhase(t, first, nil)
+		first := enterPhase(t, coordinator, "phase")
+		duplicate := enterAsync(coordinator, "phase")
+		assertStillWaiting(t, duplicate)
+		completePhase(t, first, nil)
 
-	result := <-duplicate
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
-	if result.execution.ShouldRun() {
-		t.Fatal("duplicate caller was admitted after durable completion")
-	}
+		result := <-duplicate
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.execution.ShouldRun() {
+			t.Fatal("duplicate caller was admitted after durable completion")
+		}
+	})
 }
 
 func TestCoordinatorSkipsCompletedEntryAfterRestart(t *testing.T) {
@@ -157,38 +166,40 @@ func TestCoordinatorRetriesInterruptedEntryAfterRestart(t *testing.T) {
 }
 
 func TestCoordinatorEntryFailureCancelsPeersAndWakesDependents(t *testing.T) {
-	failure := errors.New("entry failed")
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "left"},
-		lifecycle.PhaseSpec{Name: "right"},
-		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"left"}},
-	)
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "failure-run", lifecycle.Options{MaxParallel: 2})
-	defer closeCoordinator(t, coordinator)
+	synctest.Test(t, func(t *testing.T) {
+		failure := errors.New("entry failed")
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "left"},
+			lifecycle.PhaseSpec{Name: "right"},
+			lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"left"}},
+		)
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "failure-run", lifecycle.Options{MaxParallel: 2})
+		defer closeCoordinator(t, coordinator)
 
-	left := enterPhase(t, coordinator, "left")
-	right := enterPhase(t, coordinator, "right")
-	child := enterAsync(coordinator, "child")
-	assertStillWaiting(t, child)
+		left := enterPhase(t, coordinator, "left")
+		right := enterPhase(t, coordinator, "right")
+		child := enterAsync(coordinator, "child")
+		assertStillWaiting(t, child)
 
-	if err := left.Complete(context.Background(), failure); !errors.Is(err, failure) {
-		t.Fatalf("Complete error = %v, want %v", err, failure)
-	}
-	result := <-child
-	if !errors.Is(result.err, lifecycle.ErrDependencyFailed) || !errors.Is(result.err, failure) {
-		t.Fatalf("child error = %v, want dependency and action failure", result.err)
-	}
-	select {
-	case <-right.Context().Done():
-		if !errors.Is(context.Cause(right.Context()), failure) {
-			t.Fatalf("peer cancellation cause = %v, want %v", context.Cause(right.Context()), failure)
+		if err := left.Complete(context.Background(), failure); !errors.Is(err, failure) {
+			t.Fatalf("Complete error = %v, want %v", err, failure)
 		}
-	default:
-		t.Fatal("peer execution context was not canceled")
-	}
-	if err := right.Complete(context.Background(), context.Cause(right.Context())); err == nil {
-		t.Fatal("canceled peer completion returned nil")
-	}
+		result := <-child
+		if !errors.Is(result.err, lifecycle.ErrDependencyFailed) || !errors.Is(result.err, failure) {
+			t.Fatalf("child error = %v, want dependency and action failure", result.err)
+		}
+		select {
+		case <-right.Context().Done():
+			if !errors.Is(context.Cause(right.Context()), failure) {
+				t.Fatalf("peer cancellation cause = %v, want %v", context.Cause(right.Context()), failure)
+			}
+		default:
+			t.Fatal("peer execution context was not canceled")
+		}
+		if err := right.Complete(context.Background(), context.Cause(right.Context())); err == nil {
+			t.Fatal("canceled peer completion returned nil")
+		}
+	})
 }
 
 func TestCoordinatorPersistenceFailureStopsAdmission(t *testing.T) {
@@ -279,46 +290,50 @@ func TestCoordinatorCloseRetriesFailedRelease(t *testing.T) {
 }
 
 func TestCoordinatorExitsInReverseDependencyOrder(t *testing.T) {
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "root"},
-		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
-	)
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "exit-order", lifecycle.Options{})
-	defer closeCoordinator(t, coordinator)
-	completePhase(t, enterPhase(t, coordinator, "root"), nil)
-	completePhase(t, enterPhase(t, coordinator, "child"), nil)
+	synctest.Test(t, func(t *testing.T) {
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "root"},
+			lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+		)
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "exit-order", lifecycle.Options{})
+		defer closeCoordinator(t, coordinator)
+		completePhase(t, enterPhase(t, coordinator, "root"), nil)
+		completePhase(t, enterPhase(t, coordinator, "child"), nil)
 
-	rootExit := exitAsync(coordinator, "root")
-	assertStillWaiting(t, rootExit)
-	completePhase(t, exitPhase(t, coordinator, "child"), nil)
-	completePhase(t, requireExecution(t, <-rootExit), nil)
-	if status := coordinator.Snapshot().Status; status != lifecycle.RunSucceeded {
-		t.Fatalf("run status = %q, want %q", status, lifecycle.RunSucceeded)
-	}
+		rootExit := exitAsync(coordinator, "root")
+		assertStillWaiting(t, rootExit)
+		completePhase(t, exitPhase(t, coordinator, "child"), nil)
+		completePhase(t, requireExecution(t, <-rootExit), nil)
+		if status := coordinator.Snapshot().Status; status != lifecycle.RunSucceeded {
+			t.Fatalf("run status = %q, want %q", status, lifecycle.RunSucceeded)
+		}
+	})
 }
 
 func TestCoordinatorRollsBackEnteredPhasesInReverseDependencyOrder(t *testing.T) {
-	failure := errors.New("entry failed")
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "root"},
-		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
-		lifecycle.PhaseSpec{Name: "failing"},
-	)
-	coordinator := openCoordinator(t, topology, memory.NewStore(), "rollback-order", lifecycle.Options{})
-	defer closeCoordinator(t, coordinator)
-	completePhase(t, enterPhase(t, coordinator, "root"), nil)
-	completePhase(t, enterPhase(t, coordinator, "child"), nil)
-	if err := enterPhase(t, coordinator, "failing").Complete(context.Background(), failure); !errors.Is(err, failure) {
-		t.Fatalf("failure completion = %v, want %v", err, failure)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		failure := errors.New("entry failed")
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "root"},
+			lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+			lifecycle.PhaseSpec{Name: "failing"},
+		)
+		coordinator := openCoordinator(t, topology, memory.NewStore(), "rollback-order", lifecycle.Options{})
+		defer closeCoordinator(t, coordinator)
+		completePhase(t, enterPhase(t, coordinator, "root"), nil)
+		completePhase(t, enterPhase(t, coordinator, "child"), nil)
+		if err := enterPhase(t, coordinator, "failing").Complete(context.Background(), failure); !errors.Is(err, failure) {
+			t.Fatalf("failure completion = %v, want %v", err, failure)
+		}
 
-	rootRollback := rollbackAsync(coordinator, "root")
-	assertStillWaiting(t, rootRollback)
-	completePhase(t, rollbackPhase(t, coordinator, "child"), nil)
-	completePhase(t, requireExecution(t, <-rootRollback), nil)
-	if status := coordinator.Snapshot().Status; status != lifecycle.RunRolledBack {
-		t.Fatalf("run status = %q, want %q", status, lifecycle.RunRolledBack)
-	}
+		rootRollback := rollbackAsync(coordinator, "root")
+		assertStillWaiting(t, rootRollback)
+		completePhase(t, rollbackPhase(t, coordinator, "child"), nil)
+		completePhase(t, requireExecution(t, <-rootRollback), nil)
+		if status := coordinator.Snapshot().Status; status != lifecycle.RunRolledBack {
+			t.Fatalf("run status = %q, want %q", status, lifecycle.RunRolledBack)
+		}
+	})
 }
 
 func TestCoordinatorCleanupFailureDoesNotSuppressAncestors(t *testing.T) {
@@ -383,32 +398,34 @@ func TestCoordinatorRetriesInterruptedExitAndRollback(t *testing.T) {
 }
 
 func TestCoordinatorRollbackRetriesEnteringBeforeCleanup(t *testing.T) {
-	failure := errors.New("entry failed")
-	topology := coordinatorTopology(t,
-		lifecycle.PhaseSpec{Name: "root"},
-		lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
-		lifecycle.PhaseSpec{Name: "failing"},
-	)
-	store := memory.NewStore()
-	coordinator := openCoordinator(t, topology, store, "rollback-entering", lifecycle.Options{MaxParallel: 2})
-	completePhase(t, enterPhase(t, coordinator, "root"), nil)
-	if execution := enterPhase(t, coordinator, "child"); !execution.ShouldRun() {
-		t.Fatal("child did not enter")
-	}
-	if err := enterPhase(t, coordinator, "failing").Complete(context.Background(), failure); !errors.Is(err, failure) {
-		t.Fatalf("failure completion = %v, want %v", err, failure)
-	}
-	closeCoordinator(t, coordinator)
+	synctest.Test(t, func(t *testing.T) {
+		failure := errors.New("entry failed")
+		topology := coordinatorTopology(t,
+			lifecycle.PhaseSpec{Name: "root"},
+			lifecycle.PhaseSpec{Name: "child", DependsOn: []string{"root"}},
+			lifecycle.PhaseSpec{Name: "failing"},
+		)
+		store := memory.NewStore()
+		coordinator := openCoordinator(t, topology, store, "rollback-entering", lifecycle.Options{MaxParallel: 2})
+		completePhase(t, enterPhase(t, coordinator, "root"), nil)
+		if execution := enterPhase(t, coordinator, "child"); !execution.ShouldRun() {
+			t.Fatal("child did not enter")
+		}
+		if err := enterPhase(t, coordinator, "failing").Complete(context.Background(), failure); !errors.Is(err, failure) {
+			t.Fatalf("failure completion = %v, want %v", err, failure)
+		}
+		closeCoordinator(t, coordinator)
 
-	restarted := openCoordinator(t, topology, store, "rollback-entering", lifecycle.Options{})
-	defer closeCoordinator(t, restarted)
-	child := enterPhase(t, restarted, "child")
-	rootRollback := rollbackAsync(restarted, "root")
-	assertStillWaiting(t, rootRollback)
-	completePhase(t, child, nil)
-	assertStillWaiting(t, rootRollback)
-	completePhase(t, rollbackPhase(t, restarted, "child"), nil)
-	completePhase(t, requireExecution(t, <-rootRollback), nil)
+		restarted := openCoordinator(t, topology, store, "rollback-entering", lifecycle.Options{})
+		defer closeCoordinator(t, restarted)
+		child := enterPhase(t, restarted, "child")
+		rootRollback := rollbackAsync(restarted, "root")
+		assertStillWaiting(t, rootRollback)
+		completePhase(t, child, nil)
+		assertStillWaiting(t, rootRollback)
+		completePhase(t, rollbackPhase(t, restarted, "child"), nil)
+		completePhase(t, requireExecution(t, <-rootRollback), nil)
+	})
 }
 
 func TestCoordinatorRejectsStageOperationsInInvalidRunState(t *testing.T) {
@@ -567,8 +584,12 @@ func completePhase(t *testing.T, execution *lifecycle.Execution, actionErr error
 	}
 }
 
+// assertStillWaiting must run inside a synctest bubble: synctest.Wait lets
+// every other goroutine in the bubble block durably first, so an operation
+// that is not blocked would already have delivered its result.
 func assertStillWaiting(t *testing.T, results <-chan coordinatorResult) {
 	t.Helper()
+	synctest.Wait()
 	select {
 	case result := <-results:
 		t.Fatalf("operation returned before it was ready: execution=%v error=%v", result.execution, result.err)

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	lifecycle "github.com/justusschock/go-lifecycle"
@@ -15,268 +16,276 @@ import (
 )
 
 func TestEngineRunsBranchesTogetherAndJoinsBeforeReverseExit(t *testing.T) {
-	branchEntered := make(chan string, 2)
-	releaseEntry := make(chan struct{})
-	joinEntered := make(chan struct{})
-	joinExited := make(chan struct{})
-	branchExitStarted := make(chan string, 2)
-	releaseExit := make(chan struct{})
-	var branchExitCompleted atomic.Int32
+	synctest.Test(t, func(t *testing.T) {
+		branchEntered := make(chan string, 2)
+		releaseEntry := make(chan struct{})
+		joinEntered := make(chan struct{})
+		joinExited := make(chan struct{})
+		branchExitStarted := make(chan string, 2)
+		releaseExit := make(chan struct{})
+		var branchExitCompleted atomic.Int32
 
-	noop := func(context.Context) error { return nil }
-	branch := func(name string) lifecycle.Phase {
-		return lifecycle.Phase{
-			Name:      name,
-			DependsOn: []string{"root"},
-			Enter: func(context.Context) error {
-				branchEntered <- name
-				<-releaseEntry
-				return nil
-			},
-			Exit: func(context.Context) error {
-				select {
-				case <-joinExited:
-				default:
-					return errors.New("branch exited before join")
-				}
-				branchExitStarted <- name
-				<-releaseExit
-				branchExitCompleted.Add(1)
-				return nil
-			},
-			Rollback: noop,
-		}
-	}
-	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-		{Name: "join", DependsOn: []string{"left", "right"}, Enter: func(context.Context) error { close(joinEntered); return nil }, Exit: func(context.Context) error { close(joinExited); return nil }, Rollback: noop},
-		branch("right"),
-		{Name: "root", Enter: noop, Exit: func(context.Context) error {
-			if got := branchExitCompleted.Load(); got != 2 {
-				return fmt.Errorf("root exited after %d branches", got)
+		noop := func(context.Context) error { return nil }
+		branch := func(name string) lifecycle.Phase {
+			return lifecycle.Phase{
+				Name:      name,
+				DependsOn: []string{"root"},
+				Enter: func(context.Context) error {
+					branchEntered <- name
+					<-releaseEntry
+					return nil
+				},
+				Exit: func(context.Context) error {
+					select {
+					case <-joinExited:
+					default:
+						return errors.New("branch exited before join")
+					}
+					branchExitStarted <- name
+					<-releaseExit
+					branchExitCompleted.Add(1)
+					return nil
+				},
+				Rollback: noop,
 			}
-			return nil
-		}, Rollback: noop},
-		branch("left"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	type outcome struct {
-		snapshot lifecycle.Snapshot
-		err      error
-	}
-	result := make(chan outcome, 1)
-	go func() {
-		snapshot, err := engine.Run(context.Background(), "branch-run")
-		result <- outcome{snapshot: snapshot, err: err}
-	}()
-
-	seenEntries := map[string]bool{<-branchEntered: true, <-branchEntered: true}
-	if !seenEntries["left"] || !seenEntries["right"] {
-		t.Fatalf("entered branches = %v", seenEntries)
-	}
-	select {
-	case <-joinEntered:
-		t.Fatal("join entered before both branches completed")
-	default:
-	}
-	close(releaseEntry)
-	<-joinEntered
-
-	seenExits := map[string]bool{<-branchExitStarted: true, <-branchExitStarted: true}
-	if !seenExits["left"] || !seenExits["right"] {
-		t.Fatalf("exiting branches = %v", seenExits)
-	}
-	select {
-	case got := <-result:
-		t.Fatalf("run returned before branches exited: %v", got.err)
-	default:
-	}
-	close(releaseExit)
-
-	got := <-result
-	if got.err != nil {
-		t.Fatal(got.err)
-	}
-	if got.snapshot.Status != lifecycle.RunSucceeded {
-		t.Fatalf("status = %q, want %q", got.snapshot.Status, lifecycle.RunSucceeded)
-	}
-	for name, state := range got.snapshot.Phases {
-		if state.Status != lifecycle.PhaseExited {
-			t.Fatalf("phase %q status = %q, want %q", name, state.Status, lifecycle.PhaseExited)
 		}
-	}
+		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+			{Name: "join", DependsOn: []string{"left", "right"}, Enter: func(context.Context) error { close(joinEntered); return nil }, Exit: func(context.Context) error { close(joinExited); return nil }, Rollback: noop},
+			branch("right"),
+			{Name: "root", Enter: noop, Exit: func(context.Context) error {
+				if got := branchExitCompleted.Load(); got != 2 {
+					return fmt.Errorf("root exited after %d branches", got)
+				}
+				return nil
+			}, Rollback: noop},
+			branch("left"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		type outcome struct {
+			snapshot lifecycle.Snapshot
+			err      error
+		}
+		result := make(chan outcome, 1)
+		go func() {
+			snapshot, err := engine.Run(context.Background(), "branch-run")
+			result <- outcome{snapshot: snapshot, err: err}
+		}()
+
+		seenEntries := map[string]bool{<-branchEntered: true, <-branchEntered: true}
+		if !seenEntries["left"] || !seenEntries["right"] {
+			t.Fatalf("entered branches = %v", seenEntries)
+		}
+		synctest.Wait()
+		select {
+		case <-joinEntered:
+			t.Fatal("join entered before both branches completed")
+		default:
+		}
+		close(releaseEntry)
+		<-joinEntered
+
+		seenExits := map[string]bool{<-branchExitStarted: true, <-branchExitStarted: true}
+		if !seenExits["left"] || !seenExits["right"] {
+			t.Fatalf("exiting branches = %v", seenExits)
+		}
+		synctest.Wait()
+		select {
+		case got := <-result:
+			t.Fatalf("run returned before branches exited: %v", got.err)
+		default:
+		}
+		close(releaseExit)
+
+		got := <-result
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.snapshot.Status != lifecycle.RunSucceeded {
+			t.Fatalf("status = %q, want %q", got.snapshot.Status, lifecycle.RunSucceeded)
+		}
+		for name, state := range got.snapshot.Phases {
+			if state.Status != lifecycle.PhaseExited {
+				t.Fatalf("phase %q status = %q, want %q", name, state.Status, lifecycle.PhaseExited)
+			}
+		}
+	})
 }
 
 func TestEngineRunsArbitraryDAGInDependencyOrder(t *testing.T) {
-	dependencies := map[string][]string{
-		"config":    nil,
-		"network":   nil,
-		"left":      {"config"},
-		"right":     {"config"},
-		"probe":     {"network"},
-		"assembled": {"left", "right"},
-		"observed":  {"probe", "right"},
-		"publish-a": {"assembled"},
-		"publish-b": {"assembled"},
-		"audit":     {"observed"},
-		"done":      {"audit", "publish-a", "publish-b"},
-	}
-	dependents := make(map[string][]string)
-	for name, required := range dependencies {
-		for _, dependency := range required {
-			dependents[dependency] = append(dependents[dependency], name)
+	synctest.Test(t, func(t *testing.T) {
+		dependencies := map[string][]string{
+			"config":    nil,
+			"network":   nil,
+			"left":      {"config"},
+			"right":     {"config"},
+			"probe":     {"network"},
+			"assembled": {"left", "right"},
+			"observed":  {"probe", "right"},
+			"publish-a": {"assembled"},
+			"publish-b": {"assembled"},
+			"audit":     {"observed"},
+			"done":      {"audit", "publish-a", "publish-b"},
 		}
-	}
-
-	var mu sync.Mutex
-	entered := make(map[string]bool)
-	exited := make(map[string]bool)
-	makePhase := func(name string) lifecycle.Phase {
-		return lifecycle.Phase{
-			Name:      name,
-			DependsOn: dependencies[name],
-			Enter: func(context.Context) error {
-				mu.Lock()
-				defer mu.Unlock()
-				for _, dependency := range dependencies[name] {
-					if !entered[dependency] {
-						return fmt.Errorf("%s entered before %s", name, dependency)
-					}
-				}
-				entered[name] = true
-				return nil
-			},
-			Exit: func(context.Context) error {
-				mu.Lock()
-				defer mu.Unlock()
-				for _, dependent := range dependents[name] {
-					if !exited[dependent] {
-						return fmt.Errorf("%s exited before %s", name, dependent)
-					}
-				}
-				exited[name] = true
-				return nil
-			},
-			Rollback: func(context.Context) error { return nil },
+		dependents := make(map[string][]string)
+		for name, required := range dependencies {
+			for _, dependency := range required {
+				dependents[dependency] = append(dependents[dependency], name)
+			}
 		}
-	}
 
-	order := []string{"done", "right", "network", "publish-b", "config", "observed", "left", "audit", "probe", "assembled", "publish-a"}
-	phases := make([]lifecycle.Phase, 0, len(order))
-	for _, name := range order {
-		phases = append(phases, makePhase(name))
-	}
-	plan, err := lifecycle.NewPlan(phases)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := levelNames(plan.Levels()), [][]string{{"config", "network"}, {"left", "probe", "right"}, {"assembled", "observed"}, {"audit", "publish-a", "publish-b"}, {"done"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("levels = %v, want %v", got, want)
-	}
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := engine.Run(context.Background(), "arbitrary-dag")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Status != lifecycle.RunSucceeded {
-		t.Fatalf("status = %q, want %q", snapshot.Status, lifecycle.RunSucceeded)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(entered) != len(dependencies) || len(exited) != len(dependencies) {
-		t.Fatalf("entered=%d exited=%d, want %d each", len(entered), len(exited), len(dependencies))
-	}
+		var mu sync.Mutex
+		entered := make(map[string]bool)
+		exited := make(map[string]bool)
+		makePhase := func(name string) lifecycle.Phase {
+			return lifecycle.Phase{
+				Name:      name,
+				DependsOn: dependencies[name],
+				Enter: func(context.Context) error {
+					mu.Lock()
+					defer mu.Unlock()
+					for _, dependency := range dependencies[name] {
+						if !entered[dependency] {
+							return fmt.Errorf("%s entered before %s", name, dependency)
+						}
+					}
+					entered[name] = true
+					return nil
+				},
+				Exit: func(context.Context) error {
+					mu.Lock()
+					defer mu.Unlock()
+					for _, dependent := range dependents[name] {
+						if !exited[dependent] {
+							return fmt.Errorf("%s exited before %s", name, dependent)
+						}
+					}
+					exited[name] = true
+					return nil
+				},
+				Rollback: func(context.Context) error { return nil },
+			}
+		}
+
+		order := []string{"done", "right", "network", "publish-b", "config", "observed", "left", "audit", "probe", "assembled", "publish-a"}
+		phases := make([]lifecycle.Phase, 0, len(order))
+		for _, name := range order {
+			phases = append(phases, makePhase(name))
+		}
+		plan, err := lifecycle.NewPlan(phases)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := levelNames(plan.Levels()), [][]string{{"config", "network"}, {"left", "probe", "right"}, {"assembled", "observed"}, {"audit", "publish-a", "publish-b"}, {"done"}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("levels = %v, want %v", got, want)
+		}
+		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := engine.Run(context.Background(), "arbitrary-dag")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Status != lifecycle.RunSucceeded {
+			t.Fatalf("status = %q, want %q", snapshot.Status, lifecycle.RunSucceeded)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(entered) != len(dependencies) || len(exited) != len(dependencies) {
+			t.Fatalf("entered=%d exited=%d, want %d each", len(entered), len(exited), len(dependencies))
+		}
+	})
 }
 
 func TestEngineCancelsFailingLevelAndRollsBackOnlyEnteredPhases(t *testing.T) {
-	want := errors.New("branch failed")
-	started := make(chan string, 3)
-	allowEntered := make(chan struct{})
-	enteredFinished := make(chan struct{})
-	fail := make(chan struct{})
-	peerCause := make(chan error, 1)
-	enteredRolledBack := make(chan struct{})
-	var unexpectedRollbacks atomic.Int32
+	synctest.Test(t, func(t *testing.T) {
+		want := errors.New("branch failed")
+		started := make(chan string, 3)
+		allowEntered := make(chan struct{})
+		enteredFinished := make(chan struct{})
+		fail := make(chan struct{})
+		peerCause := make(chan error, 1)
+		enteredRolledBack := make(chan struct{})
+		var unexpectedRollbacks atomic.Int32
 
-	noop := func(context.Context) error { return nil }
-	plan, err := lifecycle.NewPlan([]lifecycle.Phase{
-		{Name: "root", Enter: noop, Exit: noop, Rollback: func(context.Context) error {
-			select {
-			case <-enteredRolledBack:
+		noop := func(context.Context) error { return nil }
+		plan, err := lifecycle.NewPlan([]lifecycle.Phase{
+			{Name: "root", Enter: noop, Exit: noop, Rollback: func(context.Context) error {
+				select {
+				case <-enteredRolledBack:
+					return nil
+				default:
+					return errors.New("root rolled back before entered child")
+				}
+			}},
+			{Name: "entered", DependsOn: []string{"root"}, Enter: func(context.Context) error {
+				started <- "entered"
+				<-allowEntered
+				close(enteredFinished)
 				return nil
-			default:
-				return errors.New("root rolled back before entered child")
-			}
-		}},
-		{Name: "entered", DependsOn: []string{"root"}, Enter: func(context.Context) error {
-			started <- "entered"
-			<-allowEntered
-			close(enteredFinished)
-			return nil
-		}, Exit: noop, Rollback: func(context.Context) error { close(enteredRolledBack); return nil }},
-		{Name: "bad", DependsOn: []string{"root"}, Enter: func(context.Context) error {
-			started <- "bad"
-			<-fail
-			return want
-		}, Exit: noop, Rollback: func(context.Context) error { unexpectedRollbacks.Add(1); return nil }},
-		{Name: "peer", DependsOn: []string{"root"}, Enter: func(ctx context.Context) error {
-			started <- "peer"
-			<-ctx.Done()
-			peerCause <- context.Cause(ctx)
-			return context.Cause(ctx)
-		}, Exit: noop, Rollback: func(context.Context) error { unexpectedRollbacks.Add(1); return nil }},
-		{Name: "join", DependsOn: []string{"entered", "bad", "peer"}, Enter: func(context.Context) error { return errors.New("join must not enter") }, Exit: noop, Rollback: noop},
+			}, Exit: noop, Rollback: func(context.Context) error { close(enteredRolledBack); return nil }},
+			{Name: "bad", DependsOn: []string{"root"}, Enter: func(context.Context) error {
+				started <- "bad"
+				<-fail
+				return want
+			}, Exit: noop, Rollback: func(context.Context) error { unexpectedRollbacks.Add(1); return nil }},
+			{Name: "peer", DependsOn: []string{"root"}, Enter: func(ctx context.Context) error {
+				started <- "peer"
+				<-ctx.Done()
+				peerCause <- context.Cause(ctx)
+				return context.Cause(ctx)
+			}, Exit: noop, Rollback: func(context.Context) error { unexpectedRollbacks.Add(1); return nil }},
+			{Name: "join", DependsOn: []string{"entered", "bad", "peer"}, Enter: func(context.Context) error { return errors.New("join must not enter") }, Exit: noop, Rollback: noop},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		type outcome struct {
+			snapshot lifecycle.Snapshot
+			err      error
+		}
+		result := make(chan outcome, 1)
+		go func() {
+			snapshot, err := engine.Run(context.Background(), "rollback-run")
+			result <- outcome{snapshot: snapshot, err: err}
+		}()
+		seen := map[string]bool{<-started: true, <-started: true, <-started: true}
+		if !seen["entered"] || !seen["bad"] || !seen["peer"] {
+			t.Fatalf("started = %v", seen)
+		}
+		close(allowEntered)
+		<-enteredFinished
+		close(fail)
+		if cause := <-peerCause; !errors.Is(cause, want) {
+			t.Fatalf("peer cause = %v, want %v", cause, want)
+		}
+
+		got := <-result
+		if !errors.Is(got.err, want) {
+			t.Fatalf("Run error = %v, want %v", got.err, want)
+		}
+		if got.snapshot.Status != lifecycle.RunRolledBack {
+			t.Fatalf("status = %q, want %q", got.snapshot.Status, lifecycle.RunRolledBack)
+		}
+		if got.snapshot.Phases["root"].Status != lifecycle.PhaseRolledBack || got.snapshot.Phases["entered"].Status != lifecycle.PhaseRolledBack {
+			t.Fatalf("rollback states = root:%q entered:%q", got.snapshot.Phases["root"].Status, got.snapshot.Phases["entered"].Status)
+		}
+		if got := unexpectedRollbacks.Load(); got != 0 {
+			t.Fatalf("failed phase rollback calls = %d, want 0", got)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine, err := lifecycle.NewEngine(plan, memory.NewStore(), lifecycle.Options{MaxParallel: 3})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	type outcome struct {
-		snapshot lifecycle.Snapshot
-		err      error
-	}
-	result := make(chan outcome, 1)
-	go func() {
-		snapshot, err := engine.Run(context.Background(), "rollback-run")
-		result <- outcome{snapshot: snapshot, err: err}
-	}()
-	seen := map[string]bool{<-started: true, <-started: true, <-started: true}
-	if !seen["entered"] || !seen["bad"] || !seen["peer"] {
-		t.Fatalf("started = %v", seen)
-	}
-	close(allowEntered)
-	<-enteredFinished
-	close(fail)
-	if cause := <-peerCause; !errors.Is(cause, want) {
-		t.Fatalf("peer cause = %v, want %v", cause, want)
-	}
-
-	got := <-result
-	if !errors.Is(got.err, want) {
-		t.Fatalf("Run error = %v, want %v", got.err, want)
-	}
-	if got.snapshot.Status != lifecycle.RunRolledBack {
-		t.Fatalf("status = %q, want %q", got.snapshot.Status, lifecycle.RunRolledBack)
-	}
-	if got.snapshot.Phases["root"].Status != lifecycle.PhaseRolledBack || got.snapshot.Phases["entered"].Status != lifecycle.PhaseRolledBack {
-		t.Fatalf("rollback states = root:%q entered:%q", got.snapshot.Phases["root"].Status, got.snapshot.Phases["entered"].Status)
-	}
-	if got := unexpectedRollbacks.Load(); got != 0 {
-		t.Fatalf("failed phase rollback calls = %d, want 0", got)
-	}
 }
 
 func TestEngineAttemptsEveryEnteredRollbackAfterRollbackFailure(t *testing.T) {
