@@ -5,7 +5,9 @@ import (
 	"sync"
 )
 
-// Execution is a durable admission to execute one lifecycle action.
+// Execution is a durable admission to execute one lifecycle action. Its
+// methods are safe for concurrent use; Complete is idempotent once it has
+// persisted the outcome.
 type Execution struct {
 	coordinator *Coordinator
 	name        string

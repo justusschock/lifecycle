@@ -9,6 +9,11 @@ import (
 	lifecycle "github.com/justusschock/go-lifecycle"
 )
 
+// Store is a process-local, mutex-protected lifecycle.Store. It clones
+// snapshots at every boundary and fences stale sessions with
+// lifecycle.ErrOwnershipLost. It is not durable and cannot coordinate
+// separate processes. The zero value is ready for use, and a Store is safe
+// for concurrent use.
 type Store struct {
 	mu   sync.Mutex
 	runs map[string]*runState
@@ -26,10 +31,13 @@ type session struct {
 	fence uint64
 }
 
+// NewStore returns an empty Store.
 func NewStore() *Store {
 	return &Store{runs: make(map[string]*runState)}
 }
 
+// Acquire returns an exclusive session for runID, or lifecycle.ErrRunOwned
+// while another session owns it.
 func (s *Store) Acquire(ctx context.Context, runID string) (lifecycle.Session, error) {
 	if cause := context.Cause(ctx); cause != nil {
 		return nil, cause
@@ -118,7 +126,8 @@ func (s *session) ownedState() (*runState, error) {
 	return state, nil
 }
 
-// Load provides a convenient single-operation session for inspection and tests.
+// Load acquires runID, loads its snapshot and releases it again. It is a
+// convenience for inspecting a run that no session currently owns.
 func (s *Store) Load(ctx context.Context, runID string) (snapshot lifecycle.Snapshot, resultErr error) {
 	session, err := s.Acquire(ctx, runID)
 	if err != nil {
@@ -130,7 +139,8 @@ func (s *Store) Load(ctx context.Context, runID string) (snapshot lifecycle.Snap
 	return session.Load(ctx)
 }
 
-// Save provides a convenient single-operation session for setup and tests.
+// Save acquires snapshot.RunID, saves the snapshot and releases it again. It
+// is a convenience for seeding a run that no session currently owns.
 func (s *Store) Save(ctx context.Context, snapshot lifecycle.Snapshot) (resultErr error) {
 	session, err := s.Acquire(ctx, snapshot.RunID)
 	if err != nil {

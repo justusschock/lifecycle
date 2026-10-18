@@ -8,25 +8,33 @@ import (
 	"github.com/justusschock/go-lifecycle/internal/nilcheck"
 )
 
+// Exporter turns source state into an artifact.
 type Exporter[S any] interface {
 	Export(context.Context, S) (Artifact, error)
 }
 
+// Transport moves an artifact and retrieves it again by receipt.
 type Transport interface {
 	Send(context.Context, Artifact) (Receipt, error)
 	Receive(context.Context, Receipt) (Artifact, error)
 }
 
+// Adopter turns a validated artifact into destination state.
 type Adopter[D any] interface {
 	Adopt(context.Context, Artifact) (D, error)
 }
 
+// Protocol composes an Exporter, a Transport and an Adopter. It holds no
+// mutable state of its own; it is safe for concurrent use when its
+// collaborators are.
 type Protocol[S, D any] struct {
 	exporter  Exporter[S]
 	transport Transport
 	adopter   Adopter[D]
 }
 
+// NewProtocol returns a Protocol. It returns lifecycle.ErrInvalidArtifact
+// for a nil collaborator, including a typed nil.
 func NewProtocol[S, D any](exporter Exporter[S], transport Transport, adopter Adopter[D]) (*Protocol[S, D], error) {
 	if nilcheck.IsNil(exporter) {
 		return nil, fmt.Errorf("%w: nil exporter", lifecycle.ErrInvalidArtifact)
@@ -40,6 +48,11 @@ func NewProtocol[S, D any](exporter Exporter[S], transport Transport, adopter Ad
 	return &Protocol[S, D]{exporter: exporter, transport: transport, adopter: adopter}, nil
 }
 
+// Transfer runs Export, Send, Receive and Adopt in order. It validates the
+// artifact after export and after receive, checks that the receipt and the
+// received artifact match the exported ID, and never calls Adopt after an
+// integrity failure. Errors are wrapped with the failing stage ("handoff
+// export", "handoff send", "handoff receive", "handoff adopt").
 func (p *Protocol[S, D]) Transfer(ctx context.Context, source S) (D, Receipt, error) {
 	var zero D
 	artifact, err := p.exporter.Export(ctx, source)

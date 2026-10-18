@@ -11,6 +11,10 @@ import (
 	lifecycle "github.com/justusschock/go-lifecycle"
 )
 
+// Artifact is an integrity-checked envelope of exported state. ID is the
+// hex-encoded Digest of the canonical media type, version, data and
+// metadata. Because the fields are exported, call Validate after modifying
+// an artifact.
 type Artifact struct {
 	ID        string
 	MediaType string
@@ -20,6 +24,9 @@ type Artifact struct {
 	Metadata  map[string]string
 }
 
+// NewArtifact copies data and metadata and returns an artifact with its
+// digest and ID computed. It returns lifecycle.ErrInvalidArtifact for an
+// empty media type, zero version or empty data.
 func NewArtifact(mediaType string, version uint64, data []byte, metadata map[string]string) (Artifact, error) {
 	if mediaType == "" || version == 0 || len(data) == 0 {
 		return Artifact{}, lifecycle.ErrInvalidArtifact
@@ -37,12 +44,15 @@ func NewArtifact(mediaType string, version uint64, data []byte, metadata map[str
 	}, nil
 }
 
+// Clone returns a deep copy that shares no mutable storage with a.
 func (a Artifact) Clone() Artifact {
 	a.Data = slices.Clone(a.Data)
 	a.Metadata = maps.Clone(a.Metadata)
 	return a
 }
 
+// Validate returns lifecycle.ErrInvalidArtifact for missing fields and
+// lifecycle.ErrIntegrity when the digest or ID do not match the content.
 func (a Artifact) Validate() error {
 	if a.MediaType == "" || a.Version == 0 || len(a.Data) == 0 || a.ID == "" {
 		return lifecycle.ErrInvalidArtifact
@@ -88,6 +98,7 @@ func writeCanonicalUint64(hash interface{ Write([]byte) (int, error) }, value ui
 	_, _ = hash.Write(encoded[:])
 }
 
+// Receipt identifies an artifact that a Transport has sent.
 type Receipt struct {
 	ArtifactID string
 	Location   string

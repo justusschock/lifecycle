@@ -7,17 +7,22 @@ import (
 	"slices"
 )
 
+// PhaseSpec names a phase and its dependencies without callbacks.
 type PhaseSpec struct {
 	Name      string
 	DependsOn []string
 }
 
+// Topology is a validated, immutable, callback-free dependency graph. It is
+// safe for concurrent use.
 type Topology struct {
 	phases map[string]PhaseSpec
 	levels [][]string
 	digest string
 }
 
+// NewTopology validates phases and returns a Topology. It applies the same
+// graph rules as NewPlan.
 func NewTopology(phases []PhaseSpec) (*Topology, error) {
 	canonical := make(map[string]PhaseSpec, len(phases))
 	for _, phase := range phases {
@@ -61,10 +66,14 @@ func NewTopology(phases []PhaseSpec) (*Topology, error) {
 	}, nil
 }
 
+// Digest returns the SHA-256 digest of the canonical phase names and sorted
+// dependency names. Persisted snapshots record it to detect plan changes.
 func (t *Topology) Digest() string {
 	return t.digest
 }
 
+// Levels returns fresh copies of the phases grouped by topological level,
+// sorted lexically within each level.
 func (t *Topology) Levels() [][]PhaseSpec {
 	levels := make([][]PhaseSpec, len(t.levels))
 	for levelIndex, names := range t.levels {

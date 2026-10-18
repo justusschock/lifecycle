@@ -6,8 +6,12 @@ import (
 	"slices"
 )
 
+// Action is one idempotent phase callback. It may be retried after a crash
+// and must honour cancellation of ctx.
 type Action func(context.Context) error
 
+// Phase is a named node of a Plan with its dependencies and the three
+// actions that enter, exit and roll it back.
 type Phase struct {
 	Name      string
 	DependsOn []string
@@ -16,6 +20,8 @@ type Phase struct {
 	Rollback  Action
 }
 
+// Plan is a validated, immutable lifecycle graph with callbacks. It is safe
+// for concurrent use.
 type Plan struct {
 	phases   map[string]Phase
 	levels   [][]string
@@ -23,6 +29,9 @@ type Plan struct {
 	topology *Topology
 }
 
+// NewPlan validates phases and returns a Plan. It rejects empty names, nil
+// actions, duplicate phases, unknown, duplicate or self dependencies, and
+// cycles. The plan keeps its own copies of the dependency slices.
 func NewPlan(phases []Phase) (*Plan, error) {
 	canonical := make(map[string]Phase, len(phases))
 	specs := make([]PhaseSpec, 0, len(phases))
@@ -55,10 +64,14 @@ func NewPlan(phases []Phase) (*Plan, error) {
 	}, nil
 }
 
+// Digest returns the SHA-256 topology digest of the plan's phase names and
+// dependencies. Actions are not part of the digest.
 func (p *Plan) Digest() string {
 	return p.digest
 }
 
+// Levels returns fresh copies of the phases grouped by topological level,
+// sorted lexically within each level.
 func (p *Plan) Levels() [][]Phase {
 	levels := make([][]Phase, len(p.levels))
 	for levelIndex, names := range p.levels {

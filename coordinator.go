@@ -20,7 +20,11 @@ const (
 	stageRollback
 )
 
-// Coordinator owns one fenced, durable lifecycle run.
+// Coordinator owns one fenced, durable lifecycle run. Callers that run the
+// actions themselves use it directly: EnterPhase, ExitPhase and RollbackPhase
+// block until a phase is ready and capacity is available, and the returned
+// Execution records the outcome. A Coordinator is safe for concurrent use.
+// Close it to cancel outstanding executions and release ownership.
 type Coordinator struct {
 	topology *Topology
 	session  Session
@@ -98,17 +102,21 @@ func OpenCoordinator(ctx context.Context, topology *Topology, store Store, runID
 }
 
 // EnterPhase waits until phase dependencies are durably entered and execution
-// capacity is available.
+// capacity is available. It returns an Execution whose ShouldRun is false if
+// the phase already entered, and an error joined with ErrDependencyFailed if
+// a dependency failed entry. It returns the cause of ctx when ctx ends first.
 func (c *Coordinator) EnterPhase(ctx context.Context, name string) (*Execution, error) {
 	return c.admit(ctx, name, stageEnter, true)
 }
 
-// ExitPhase waits until all dependent phases have durably completed exit.
+// ExitPhase waits until all dependent phases have durably completed exit. It
+// returns ErrInvalidPhase unless every entry has durably succeeded.
 func (c *Coordinator) ExitPhase(ctx context.Context, name string) (*Execution, error) {
 	return c.admit(ctx, name, stageExit, true)
 }
 
-// RollbackPhase waits until all dependent phases have durably resolved rollback.
+// RollbackPhase waits until all dependent phases have durably resolved
+// rollback. It returns ErrInvalidPhase unless the run is rolling back.
 func (c *Coordinator) RollbackPhase(ctx context.Context, name string) (*Execution, error) {
 	return c.admit(ctx, name, stageRollback, true)
 }

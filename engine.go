@@ -14,12 +14,16 @@ import (
 
 // Engine automatically drives a callback-bearing Plan through a durable
 // Coordinator. Coordinator owns all topology readiness and snapshot mutation.
+// An Engine is immutable after construction and safe for concurrent use.
 type Engine struct {
 	plan    *Plan
 	store   Store
 	options Options
 }
 
+// NewEngine returns an Engine for plan backed by store. It rejects nil or
+// uninitialized plans, nil stores (including typed nils) and negative
+// parallelism with ErrInvalidPhase.
 func NewEngine(plan *Plan, store Store, options Options) (*Engine, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("%w: nil plan", ErrInvalidPhase)
@@ -43,6 +47,11 @@ func NewEngine(plan *Plan, store Store, options Options) (*Engine, error) {
 }
 
 // Run executes the complete entry, exit, or rollback lifecycle for runID.
+// It acquires the run from the store, resumes any persisted state, and
+// releases ownership before returning. It returns the last durably saved
+// snapshot together with the joined action and persistence errors; a run
+// that is already terminal returns ErrRunTerminal. Run is safe to call
+// concurrently; concurrent calls for the same run fail with ErrRunOwned.
 func (e *Engine) Run(ctx context.Context, runID string) (result Snapshot, resultErr error) {
 	coordinator, err := OpenCoordinator(ctx, e.plan.topology, e.store, runID, e.options)
 	if err != nil {
