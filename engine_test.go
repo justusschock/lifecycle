@@ -594,7 +594,7 @@ func TestEngineDoesNotRepeatCompletedEntryAfterRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{MaxParallel: 2, Clock: func() time.Time { return now }})
+	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{MaxParallel: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,8 +715,8 @@ func TestEngineOrdersAllRecoveredEntryFailuresByPlanOrder(t *testing.T) {
 	}
 	store := memory.NewStore()
 	phases := make(map[string]lifecycle.PhaseState)
-	phases["b"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, Attempts: 1, LastError: "b failed"}
-	phases["a"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed, Attempts: 1, LastError: "a failed"}
+	phases["b"] = lifecycle.PhaseState{Status: lifecycle.PhaseEnterFailed, Attempts: 1, LastError: "b failed"}
+	phases["a"] = lifecycle.PhaseState{Status: lifecycle.PhaseEnterFailed, Attempts: 1, LastError: "a failed"}
 	phases["root"] = lifecycle.PhaseState{Status: lifecycle.PhaseEntered, Attempts: 1}
 	saveSnapshot(t, store, lifecycle.Snapshot{RunID: "recovered-failures", PlanDigest: plan.Digest(), Status: lifecycle.RunRollingBack, Phases: phases})
 	engine, err := lifecycle.NewEngine(plan, store, lifecycle.Options{})

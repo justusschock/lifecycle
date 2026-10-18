@@ -28,7 +28,7 @@ func TestStoreReturnsNotFoundAndCopiesSnapshots(t *testing.T) {
 	if err := store.Save(context.Background(), original); err != nil {
 		t.Fatal(err)
 	}
-	original.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseFailed}
+	original.Phases["phase"] = lifecycle.PhaseState{Status: lifecycle.PhaseEnterFailed}
 
 	loaded, err := store.Load(context.Background(), "run")
 	if err != nil {
